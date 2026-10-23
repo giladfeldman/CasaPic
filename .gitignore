@@ -1,0 +1,11 @@
+# Google's Picasa material: private reference only, never committed or shipped.
+research/picasa-reference/
+research/captures/
+tmp/
+
+# Build output
+node_modules/
+dist/
+target/
+src-tauri/gen/schemas/
+*.tsbuildinfo

@@ -1,0 +1,357 @@
+//! The library index: one SQLite file holding folders, photos and thumbnails.
+//!
+//! The photo files and the `.casapic.ini` sidecars on disk are the source of truth; this
+//! database is a fast cache of them and can be deleted at any time (it is rebuilt by a scan).
+
+use std::path::Path;
+use std::sync::Mutex;
+
+use anyhow::{Context, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
+
+const SCHEMA: &str = "
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS folders (
+    id        INTEGER PRIMARY KEY,
+    path      TEXT NOT NULL UNIQUE,
+    name      TEXT NOT NULL,
+    root      TEXT NOT NULL,
+    date_min  INTEGER,
+    date_max  INTEGER,
+    count     INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS photos (
+    id          INTEGER PRIMARY KEY,
+    folder_id   INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    mtime       INTEGER NOT NULL,
+    width       INTEGER NOT NULL DEFAULT 0,
+    height      INTEGER NOT NULL DEFAULT 0,
+    taken       INTEGER,
+    orientation INTEGER NOT NULL DEFAULT 1,
+    camera      TEXT,
+    star        INTEGER NOT NULL DEFAULT 0,
+    recipe      TEXT NOT NULL DEFAULT '',
+    thumb_level INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(folder_id, name)
+);
+CREATE INDEX IF NOT EXISTS photos_folder ON photos(folder_id, taken, name);
+CREATE TABLE IF NOT EXISTS thumbs (
+    photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+    level    INTEGER NOT NULL,
+    jpeg     BLOB NOT NULL
+);
+";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Folder {
+    pub id: i64,
+    pub path: String,
+    pub name: String,
+    pub root: String,
+    pub date_min: Option<i64>,
+    pub date_max: Option<i64>,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Photo {
+    pub id: i64,
+    pub folder_id: i64,
+    pub name: String,
+    pub size: i64,
+    pub mtime: i64,
+    pub width: i64,
+    pub height: i64,
+    pub taken: Option<i64>,
+    pub orientation: i64,
+    pub camera: Option<String>,
+    pub star: bool,
+    pub recipe: String,
+    pub thumb_level: i64,
+}
+
+/// What the scanner knows about one file, before it has an id.
+#[derive(Debug, Clone, Default)]
+pub struct PhotoInfo {
+    pub name: String,
+    pub size: i64,
+    pub mtime: i64,
+    pub width: i64,
+    pub height: i64,
+    pub taken: Option<i64>,
+    pub orientation: i64,
+    pub camera: Option<String>,
+}
+
+pub struct Db {
+    conn: Mutex<Connection>,
+}
+
+fn photo_from_row(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
+    Ok(Photo {
+        id: r.get(0)?,
+        folder_id: r.get(1)?,
+        name: r.get(2)?,
+        size: r.get(3)?,
+        mtime: r.get(4)?,
+        width: r.get(5)?,
+        height: r.get(6)?,
+        taken: r.get(7)?,
+        orientation: r.get(8)?,
+        camera: r.get(9)?,
+        star: r.get::<_, i64>(10)? != 0,
+        recipe: r.get(11)?,
+        thumb_level: r.get(12)?,
+    })
+}
+
+const PHOTO_COLS: &str =
+    "id, folder_id, name, size, mtime, width, height, taken, orientation, camera, star, recipe, thumb_level";
+
+impl Db {
+    pub fn open(path: &Path) -> Result<Db> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Db { conn: Mutex::new(conn) })
+    }
+
+    pub fn open_in_memory() -> Result<Db> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Db { conn: Mutex::new(conn) })
+    }
+
+    fn c(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn folder_id(&self, path: &str) -> Result<Option<i64>> {
+        Ok(self.c().query_row("SELECT id FROM folders WHERE path = ?1", [path], |r| r.get(0)).optional()?)
+    }
+
+    pub fn folders(&self) -> Result<Vec<Folder>> {
+        let c = self.c();
+        let mut st = c.prepare(
+            "SELECT id, path, name, root, date_min, date_max, count FROM folders
+             WHERE count > 0 ORDER BY COALESCE(date_max, 0) DESC, name",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(Folder {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                name: r.get(2)?,
+                root: r.get(3)?,
+                date_min: r.get(4)?,
+                date_max: r.get(5)?,
+                count: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Existing (name -> (id, size, mtime)) for a folder, used to skip unchanged files.
+    pub fn folder_index(&self, folder_id: i64) -> Result<std::collections::HashMap<String, (i64, i64, i64)>> {
+        let c = self.c();
+        let mut st = c.prepare("SELECT name, id, size, mtime FROM photos WHERE folder_id = ?1")?;
+        let rows = st.query_map([folder_id], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn photos(&self, folder_id: i64) -> Result<Vec<Photo>> {
+        let c = self.c();
+        let mut st = c.prepare(&format!(
+            "SELECT {PHOTO_COLS} FROM photos WHERE folder_id = ?1 ORDER BY COALESCE(taken, mtime), name"
+        ))?;
+        let rows = st.query_map([folder_id], photo_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn photo(&self, id: i64) -> Result<Option<Photo>> {
+        Ok(self
+            .c()
+            .query_row(&format!("SELECT {PHOTO_COLS} FROM photos WHERE id = ?1"), [id], photo_from_row)
+            .optional()?)
+    }
+
+    /// Full path of a photo on disk.
+    pub fn photo_path(&self, id: i64) -> Result<Option<std::path::PathBuf>> {
+        Ok(self
+            .c()
+            .query_row(
+                "SELECT f.path, p.name FROM photos p JOIN folders f ON f.id = p.folder_id WHERE p.id = ?1",
+                [id],
+                |r| Ok(Path::new(&r.get::<_, String>(0)?).join(r.get::<_, String>(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Writes one scanned folder in a single transaction: inserts/updates `changed`, keeps
+    /// names in `present`, deletes everything else, applies sidecar stars/recipes, and
+    /// stores embedded previews. Returns the ids of new or changed photos.
+    pub fn apply_folder_scan(
+        &self,
+        path: &str,
+        name: &str,
+        root: &str,
+        present: &[String],
+        changed: &[(PhotoInfo, Option<Vec<u8>>)],
+        sidecar: &std::collections::HashMap<String, crate::sidecar::Entry>,
+    ) -> Result<(i64, Vec<i64>)> {
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        tx.execute(
+            "INSERT INTO folders(path, name, root) VALUES(?1, ?2, ?3)
+             ON CONFLICT(path) DO UPDATE SET name = excluded.name, root = excluded.root",
+            params![path, name, root],
+        )?;
+        let fid: i64 = tx.query_row("SELECT id FROM folders WHERE path = ?1", [path], |r| r.get(0))?;
+        let mut ids = Vec::with_capacity(changed.len());
+        for (p, preview) in changed {
+            let id: i64 = tx.query_row(
+                "INSERT INTO photos(folder_id, name, size, mtime, width, height, taken, orientation, camera, thumb_level)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
+                 ON CONFLICT(folder_id, name) DO UPDATE SET size = excluded.size, mtime = excluded.mtime,
+                   width = excluded.width, height = excluded.height, taken = excluded.taken,
+                   orientation = excluded.orientation, camera = excluded.camera, thumb_level = 0
+                 RETURNING id",
+                params![fid, p.name, p.size, p.mtime, p.width, p.height, p.taken, p.orientation, p.camera],
+                |r| r.get(0),
+            )?;
+            tx.execute("DELETE FROM thumbs WHERE photo_id = ?1", [id])?;
+            if let Some(jpeg) = preview {
+                tx.execute("INSERT INTO thumbs(photo_id, level, jpeg) VALUES(?1, 1, ?2)", params![id, jpeg])?;
+                tx.execute("UPDATE photos SET thumb_level = 1 WHERE id = ?1", [id])?;
+            }
+            ids.push(id);
+        }
+        // remove photos that are gone from disk
+        {
+            let keep: std::collections::HashSet<&str> = present.iter().map(|s| s.as_str()).collect();
+            let mut st = tx.prepare("SELECT id, name FROM photos WHERE folder_id = ?1")?;
+            let gone: Vec<i64> = st
+                .query_map([fid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .filter_map(|r| r.ok())
+                .filter(|(_, n)| !keep.contains(n.as_str()))
+                .map(|(id, _)| id)
+                .collect();
+            drop(st);
+            for id in gone {
+                tx.execute("DELETE FROM photos WHERE id = ?1", [id])?;
+            }
+        }
+        // sidecar is the source of truth for star and recipe
+        tx.execute("UPDATE photos SET star = 0, recipe = '' WHERE folder_id = ?1", [fid])?;
+        for (fname, e) in sidecar {
+            tx.execute(
+                "UPDATE photos SET star = ?1, recipe = ?2 WHERE folder_id = ?3 AND name = ?4",
+                params![e.star as i64, e.filters, fid, fname],
+            )?;
+        }
+        tx.execute(
+            "UPDATE folders SET
+               count = (SELECT COUNT(*) FROM photos WHERE folder_id = ?1),
+               date_min = (SELECT MIN(COALESCE(taken, mtime)) FROM photos WHERE folder_id = ?1),
+               date_max = (SELECT MAX(COALESCE(taken, mtime)) FROM photos WHERE folder_id = ?1)
+             WHERE id = ?1",
+            [fid],
+        )?;
+        tx.commit()?;
+        Ok((fid, ids))
+    }
+
+    /// Folders under `root` whose path is not in `seen` are removed (folder deleted on disk).
+    pub fn remove_folders_not_in(&self, root: &str, seen: &[String]) -> Result<usize> {
+        let c = self.c();
+        let keep: std::collections::HashSet<&str> = seen.iter().map(|s| s.as_str()).collect();
+        let mut st = c.prepare("SELECT id, path FROM folders WHERE root = ?1")?;
+        let gone: Vec<i64> = st
+            .query_map([root], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .filter_map(|r| r.ok())
+            .filter(|(_, p)| !keep.contains(p.as_str()))
+            .map(|(id, _)| id)
+            .collect();
+        drop(st);
+        for id in &gone {
+            c.execute("DELETE FROM folders WHERE id = ?1", [id])?;
+        }
+        Ok(gone.len())
+    }
+
+    /// Removes a folder and everything indexed below it (it was deleted on disk).
+    pub fn remove_folder_tree(&self, path: &str) -> Result<usize> {
+        // prefix compare, not LIKE: "_" and "%" are common in folder names
+        let sub = format!("{}\\", path.trim_end_matches('\\'));
+        Ok(self.c().execute(
+            "DELETE FROM folders WHERE path = ?1 OR substr(path, 1, length(?2)) = ?2",
+            params![path, sub],
+        )?)
+    }
+
+    pub fn thumb(&self, photo_id: i64) -> Result<Option<(i64, Vec<u8>)>> {
+        Ok(self
+            .c()
+            .query_row("SELECT level, jpeg FROM thumbs WHERE photo_id = ?1", [photo_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?)
+    }
+
+    pub fn put_thumbs(&self, items: &[(i64, i64, Vec<u8>)]) -> Result<()> {
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        for (id, level, jpeg) in items {
+            // the photo may have been deleted meanwhile; ignore those
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM photos WHERE id = ?1)", [id], |r| r.get(0))?;
+            if !exists {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO thumbs(photo_id, level, jpeg) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(photo_id) DO UPDATE SET level = excluded.level, jpeg = excluded.jpeg",
+                params![id, level, jpeg],
+            )?;
+            tx.execute("UPDATE photos SET thumb_level = ?2 WHERE id = ?1", params![id, level])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Photos whose best thumbnail is below `level`, oldest folders last.
+    pub fn needing_thumbs(&self, level: i64, limit: i64) -> Result<Vec<i64>> {
+        let c = self.c();
+        let mut st = c.prepare("SELECT id FROM photos WHERE thumb_level < ?1 ORDER BY folder_id DESC, id LIMIT ?2")?;
+        let rows = st.query_map(params![level, limit], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_thumb_level(&self, id: i64, level: i64) -> Result<()> {
+        self.c().execute("UPDATE photos SET thumb_level = ?2 WHERE id = ?1", params![id, level])?;
+        Ok(())
+    }
+
+    pub fn set_star(&self, id: i64, star: bool) -> Result<()> {
+        self.c().execute("UPDATE photos SET star = ?2 WHERE id = ?1", params![id, star as i64])?;
+        Ok(())
+    }
+
+    pub fn set_recipe(&self, id: i64, recipe: &str) -> Result<()> {
+        self.c().execute("UPDATE photos SET recipe = ?2 WHERE id = ?1", params![id, recipe])?;
+        Ok(())
+    }
+
+    pub fn counts(&self) -> Result<(i64, i64)> {
+        Ok(self.c().query_row(
+            "SELECT (SELECT COUNT(*) FROM folders WHERE count > 0), (SELECT COUNT(*) FROM photos)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?)
+    }
+}

@@ -1,0 +1,30 @@
+/* Colours from Picasa's constants.ui (docs/SPEC.md §2); fonts are free look-alikes. */
+:root {
+  --list-bg: #f3f3f3;
+  --list-hover: #e5e2da;
+  --list-sel: #25648b;
+  --cat-bg: #edeae4;
+  --strip: #e2e2e2;
+  --title: #634b45;
+  --thumb-sel: #009eff;
+  --chrome: #f2efe6;
+  --chrome-line: #d6d2c4;
+  --status: #5b8db4;
+  --text: #222;
+  --muted: #777;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+}
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; height: 100%; overflow: hidden; background: var(--chrome); user-select: none; }
+button {
+  font: inherit; font-weight: 600; font-size: 12px; color: #333;
+  background: linear-gradient(#fdfdfb, #e7e4da); border: 1px solid #b9b5a8; border-radius: 3px;
+  padding: 3px 10px; cursor: pointer;
+}
+button:hover:not(:disabled) { background: linear-gradient(#ffffff, #efece3); border-color: #8f8b7f; }
+button:active:not(:disabled) { background: #dcd8cc; }
+button:disabled { color: #aaa; cursor: default; }
+input[type="range"] { accent-color: var(--list-sel); }
+.georgia { font-family: Georgia, "Times New Roman", serif; }

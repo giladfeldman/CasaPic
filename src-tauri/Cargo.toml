@@ -1,0 +1,25 @@
+[package]
+name = "casapic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "CasaPic desktop app (Tauri shell around casapic-core)"
+
+[lib]
+# The `_lib` suffix avoids a Windows name clash between the lib and bin targets.
+name = "casapic_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+casapic-core = { path = "../crates/core" }
+tauri = { version = "2.12.5", features = [] }
+tauri-plugin-dialog = "2.8.3"
+image = { version = "0.25.10", default-features = false }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
