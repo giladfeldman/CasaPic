@@ -10,6 +10,10 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
+/// Bumped whenever the tables change. The database is only a cache of the folders and their
+/// sidecars, so an older one is simply dropped and rebuilt by the next scan.
+const SCHEMA_VERSION: i64 = 2;
+
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -19,6 +23,8 @@ CREATE TABLE IF NOT EXISTS folders (
     path      TEXT NOT NULL UNIQUE,
     name      TEXT NOT NULL,
     root      TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    sort      TEXT NOT NULL DEFAULT '',
     date_min  INTEGER,
     date_max  INTEGER,
     count     INTEGER NOT NULL DEFAULT 0
@@ -53,6 +59,10 @@ pub struct Folder {
     pub path: String,
     pub name: String,
     pub root: String,
+    /// "Add a description" text, from the folder's sidecar
+    pub description: String,
+    /// photo order chosen with Folder > Sort By: "", "name", "size" ("date" = ""), "-" = reversed
+    pub sort: String,
     pub date_min: Option<i64>,
     pub date_max: Option<i64>,
     pub count: i64,
@@ -119,7 +129,12 @@ impl Db {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version != SCHEMA_VERSION {
+            conn.execute_batch("DROP TABLE IF EXISTS thumbs; DROP TABLE IF EXISTS photos; DROP TABLE IF EXISTS folders;")?;
+        }
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         Ok(Db { conn: Mutex::new(conn) })
     }
 
@@ -140,7 +155,7 @@ impl Db {
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let c = self.c();
         let mut st = c.prepare(
-            "SELECT id, path, name, root, date_min, date_max, count FROM folders
+            "SELECT id, path, name, root, date_min, date_max, count, description, sort FROM folders
              WHERE count > 0 ORDER BY COALESCE(date_max, 0) DESC, name",
         )?;
         let rows = st.query_map([], |r| {
@@ -152,6 +167,8 @@ impl Db {
                 date_min: r.get(4)?,
                 date_max: r.get(5)?,
                 count: r.get(6)?,
+                description: r.get(7)?,
+                sort: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -247,7 +264,11 @@ impl Db {
                 tx.execute("DELETE FROM photos WHERE id = ?1", [id])?;
             }
         }
-        // sidecar is the source of truth for star and recipe
+        // sidecar is the source of truth for star, recipe and the folder's description
+        let folder = sidecar.get(crate::sidecar::FOLDER_SECTION);
+        let description = folder.map(|e| e.get("description")).unwrap_or("");
+        let sort = folder.map(|e| e.get("sortby")).unwrap_or("");
+        tx.execute("UPDATE folders SET description = ?1, sort = ?2 WHERE id = ?3", params![description, sort, fid])?;
         tx.execute("UPDATE photos SET star = 0, recipe = '' WHERE folder_id = ?1", [fid])?;
         for (fname, e) in sidecar {
             tx.execute(
@@ -283,6 +304,45 @@ impl Db {
             c.execute("DELETE FROM folders WHERE id = ?1", [id])?;
         }
         Ok(gone.len())
+    }
+
+    /// Points an indexed photo at its new name (and folder, if that folder is indexed), after
+    /// the file was renamed or moved, so it keeps its id, thumbnail and place in a selection.
+    /// Returns false when the new folder is not indexed (the next scan adds the photo there).
+    pub fn relocate_photo(&self, id: i64, folder: &str, name: &str) -> Result<bool> {
+        let c = self.c();
+        let fid: Option<i64> = c.query_row("SELECT id FROM folders WHERE path = ?1", [folder], |r| r.get(0)).optional()?;
+        let Some(fid) = fid else { return Ok(false) };
+        c.execute("DELETE FROM photos WHERE folder_id = ?1 AND name = ?2 AND id <> ?3", params![fid, name, id])?;
+        Ok(c.execute("UPDATE photos SET folder_id = ?1, name = ?2 WHERE id = ?3", params![fid, name, id])? == 1)
+    }
+
+    /// Forgets every thumbnail (Options > Clear Thumbnail Cache). Returns how many there were.
+    pub fn clear_thumbs(&self) -> Result<usize> {
+        let c = self.c();
+        let n = c.execute("DELETE FROM thumbs", [])?;
+        c.execute("UPDATE photos SET thumb_level = 0", [])?;
+        Ok(n)
+    }
+
+    /// Indexes a new, empty folder (photos are about to be moved into it).
+    pub fn add_folder(&self, path: &str, root: &str) -> Result<()> {
+        let name = Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
+        self.c().execute("INSERT OR IGNORE INTO folders (path, name, root) VALUES (?1, ?2, ?3)", params![path, name, root])?;
+        Ok(())
+    }
+
+    /// Removes one folder (not those below it) from the index.
+    pub fn remove_folder(&self, path: &str) -> Result<usize> {
+        Ok(self.c().execute("DELETE FROM folders WHERE path = ?1", [path])?)
+    }
+
+    /// Every indexed folder path with its scan start point.
+    pub fn folder_roots(&self) -> Result<Vec<(String, String)>> {
+        let c = self.c();
+        let mut st = c.prepare("SELECT path, root FROM folders")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Removes a folder and everything indexed below it (it was deleted on disk).

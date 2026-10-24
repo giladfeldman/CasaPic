@@ -6,13 +6,42 @@
 
   let { onopen }: { onopen: (id: number) => void } = $props();
 
-  const PAD = 24, HEADER = 78, GAPX = 12, GAPY = 22, TAIL = 18, OVERSCAN = 600;
+  const PAD = 24, HEADER = 96, GAPX = 12, GAPY = 22, TAIL = 18, OVERSCAN = 600;
 
   let el: HTMLDivElement | undefined = $state();
   let width = $state(800);
   let height = $state(600);
   let scrollTop = $state(0);
   let menu = $state<{ x: number; y: number } | null>(null);
+  /** the folder whose description is being typed, and the text so far */
+  let editing = $state<{ id: number; text: string } | null>(null);
+
+  // Folder > Edit Description (from the folder list) opens the box on that folder's header.
+  $effect(() => {
+    const id = store.editDescription;
+    if (id == null) return;
+    store.editDescription = null;
+    const f = store.folders.find((f) => f.id === id);
+    if (!f) return;
+    scrollToFolder(id);
+    editing = { id, text: f.description };
+  });
+
+  async function saveDescription(f: Folder) {
+    if (!editing || editing.id !== f.id) return;
+    const text = editing.text.trim();
+    editing = null;
+    if (text === f.description) return;
+    try {
+      await api.setFolderDescription(f.path, text);
+    } catch (e) {
+      store.message = String(e);
+    }
+  }
+  function focusEnd(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
 
   const size = $derived(store.thumbSize);
   const cols = $derived(Math.max(1, Math.floor((width - 2 * PAD + GAPX) / (size + GAPX))));
@@ -102,6 +131,14 @@
     store.select(id, e.ctrlKey ? "toggle" : e.shiftKey ? "range" : "only");
   }
 
+  /** dragging photos onto a folder in the folder list moves them (Ctrl: copies) */
+  function dragStart(e: DragEvent, id: number) {
+    if (!store.selection.has(id)) store.select(id);
+    const ids = store.picked();
+    e.dataTransfer?.setData("application/x-casapic-photos", JSON.stringify(ids));
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copyMove";
+  }
+
   function context(e: MouseEvent, id: number) {
     e.preventDefault();
     if (!store.selection.has(id)) store.select(id);
@@ -113,6 +150,15 @@
     ["Rotate Clockwise", "Ctrl+R", () => store.rotate(1)],
     ["Rotate Counterclockwise", "Ctrl+Shift+R", () => store.rotate(-1)],
     ["Star / Unstar", "", () => store.toggleStar()],
+    ["Rename…", "F2", () => store.renamePicked()],
+    ["Delete from Disk", "Del", () => store.deletePicked()],
+    ["Cut", "Ctrl+X", () => store.cutOrCopy(true)],
+    ["Copy", "Ctrl+C", () => store.cutOrCopy(false)],
+    ["Move to New Folder…", "", () => store.moveToNewFolder()],
+    ["Split Folder Here…", "", () => store.splitFolderHere()],
+    ["Save a Copy", "", () => store.saveCopy()],
+    ["Adjust Date and Time…", "", () => (store.dateFor = store.picked())],
+    ["Open in an Editor", "Ctrl+Shift+O", () => store.openWith("editor")],
     ["Export Picture to Folder…", "Ctrl+Shift+S", () => (store.exportFor = store.picked())],
     ["Locate on Disk", "Ctrl+Enter", () => api.locate(store.picked()[0])],
     ["Properties", "Alt+Enter", () => { if (!store.showProperties) store.toggleProperties(); }],
@@ -131,6 +177,14 @@
         <div>
           <div class="title georgia">{b.folder.name}</div>
           <div class="date">{fmtDay(b.folder.first ?? b.folder.date)} · {b.folder.photos.length} pictures</div>
+          {#if editing?.id === b.folder.id}
+            <input class="desc-in" bind:value={editing.text} use:focusEnd placeholder="Add a description"
+              onblur={() => saveDescription(b.folder)}
+              onkeydown={(e) => { e.stopPropagation(); if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") editing = null; }} />
+          {:else}
+            <button class="desc" class:empty={!b.folder.description} title="Click to edit the folder's description"
+              onclick={() => (editing = { id: b.folder.id, text: b.folder.description })}>{b.folder.description || "Add a description"}</button>
+          {/if}
         </div>
       </div>
       {#each cells as c (c.id)}
@@ -143,6 +197,8 @@
           style:height="{size}px"
           role="button"
           tabindex="-1"
+          draggable="true"
+          ondragstart={(e) => dragStart(e, c.id)}
           onclick={(e) => click(e, c.id)}
           ondblclick={() => onopen(c.id)}
           oncontextmenu={(e) => context(e, c.id)}
@@ -174,9 +230,14 @@
 <style>
   .grid { flex: 1; overflow-y: auto; background: #fff; position: relative; }
   .space { position: relative; }
-  .head { position: absolute; left: 20px; right: 20px; height: 64px; display: flex; gap: 10px; align-items: flex-start; padding-top: 8px; }
+  .head { position: absolute; left: 20px; right: 20px; height: 84px; display: flex; gap: 10px; align-items: flex-start; padding-top: 8px; }
   .title { font-size: 20px; color: var(--title); line-height: 1.1; }
   .date { color: #555; margin-top: 3px; }
+  .head > div { flex: 1; min-width: 0; }
+  .desc { display: block; border: none; background: none; padding: 1px 0; margin-top: 3px; font-weight: 400; font-size: 13px; color: #333; text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .desc.empty { color: #9a9a9a; font-style: italic; }
+  .desc:hover { text-decoration: underline; }
+  .desc-in { display: block; margin-top: 2px; width: min(560px, 100%); font-size: 13px; padding: 1px 4px; }
   .cell { position: absolute; display: flex; align-items: center; justify-content: center; outline: none; }
   .frame { position: relative; display: block; line-height: 0; }
   .cell img { display: block; box-shadow: 1px 2px 5px #0006; }

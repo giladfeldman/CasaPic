@@ -9,6 +9,7 @@ description = "CasaPic's photo logic: scanning, index, thumbnails, decoding, edi
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 rayon.workspace = true
 windows.workspace = true
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -18,6 +19,9 @@ notify = "8.2.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 zune-jpeg = "0.5.15"
 zune-core = "0.5.3"
+# multithreaded COM, the same mode the WIC image decoder sets on these threads (the default
+# apartment mode panics on a thread WIC already set up)
+trash = { version = "5.2.9", default-features = false, features = ["coinit_multithreaded", "chrono"] }
 
 [dev-dependencies]
 tempfile = "3"

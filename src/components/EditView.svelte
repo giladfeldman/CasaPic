@@ -540,8 +540,10 @@
 
     <div class="frame" bind:clientWidth={frameW} bind:clientHeight={frameH}>
       <div class="pic" style:width="{disp.w}px" style:height="{disp.h}px">
+        <!-- Options > "single click on the photo goes back to the Library" -->
         <canvas
           bind:this={canvas}
+          onclick={() => { if (store.options?.single_click_exit_edit && mode === "fixes" && !pick) store.view = "library"; }}
           style:width="{disp.w}px"
           style:height="{disp.h}px"
           style:transform={mode === "straighten" ? `rotate(${angle}deg) scale(${1 / straightenScale})` : ""}

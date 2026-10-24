@@ -12,11 +12,14 @@ use std::sync::{Arc, Mutex, mpsc};
 use casapic_core::db::Db;
 use casapic_core::recipe::{self, Op};
 use casapic_core::render::{self, Img};
-use casapic_core::{export, paths, save, scan, sidecar, thumbs, watch, wic};
+use casapic_core::{export, paths, save, sidecar, thumbs, watch, wic};
 use rayon::prelude::*;
 use serde::Serialize;
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, State};
+
+mod files;
+mod folders;
 
 type Res<T> = Result<T, String>;
 
@@ -199,6 +202,8 @@ pub struct App {
     fx: Mutex<Option<Arc<Vec<u8>>>>,
     version: AtomicU64,
     watcher: Mutex<Option<watch::Watch>>,
+    /// the Folder Manager's marks and the Options (saved in settings.json)
+    settings: Mutex<casapic_core::settings::Settings>,
     /// photos prepared ahead, keyed by (id, edge); at most PREPARED_MAX, oldest dropped
     prepared: Mutex<std::collections::VecDeque<((i64, u32), Slot)>>,
 }
@@ -292,6 +297,16 @@ struct FolderOut {
     date: Option<i64>,
     /// oldest photo (shown under the folder title, as Picasa does)
     first: Option<i64>,
+    /// "Add a description" text
+    description: String,
+    /// photo order (Folder > Sort By): "" = date, "name", "size"; "-" prefix = reversed
+    sort: String,
+    /// the Folder Manager folder it is scanned from (the top of its branch in the tree view)
+    root: String,
+    /// newest file change (seconds), for sorting folders by Recent Changes
+    changed: i64,
+    /// total size of its photos, for sorting folders by Size
+    bytes: i64,
     /// one row per photo: [id, starred (0/1), thumbnail level]
     photos: Vec<[i64; 3]>,
 }
@@ -302,11 +317,25 @@ fn library(app: State<'_, App>) -> Res<Vec<FolderOut>> {
     let folders = app.db.folders().map_err(err)?;
     let mut out = Vec::with_capacity(folders.len());
     for f in folders {
-        let photos = app.db.photos(f.id).map_err(err)?;
+        let mut photos = app.db.photos(f.id).map_err(err)?;
+        let reverse = f.sort.starts_with('-');
+        match f.sort.trim_start_matches('-') {
+            "name" => photos.sort_by_key(|p| p.name.to_lowercase()),
+            "size" => photos.sort_by_key(|p| p.size),
+            _ => {}
+        }
+        if reverse {
+            photos.reverse();
+        }
         out.push(FolderOut {
             id: f.id,
             name: f.name,
             path: f.path,
+            description: f.description,
+            sort: f.sort,
+            root: f.root,
+            changed: photos.iter().map(|p| p.mtime).max().unwrap_or(0),
+            bytes: photos.iter().map(|p| p.size).sum(),
             date: f.date_max,
             first: f.date_min,
             photos: photos.iter().map(|p| [p.id, p.star as i64, p.thumb_level]).collect(),
@@ -814,9 +843,7 @@ fn edit_undo(app: State<'_, App>, redo: bool) -> Res<EditState> {
 /// Re-reads a photo's folder after its file changed (size, date, orientation now upright) and
 /// makes a new thumbnail.
 fn photo_file_changed(app: &App, id: i64, folder: &Path) {
-    if let Some(root) = watch::root_of(&paths::roots(), folder) {
-        let _ = scan::scan_folder(&app.db, folder, &root.to_string_lossy());
-    }
+    folders::rescan_folder(app, folder);
     app.forget(id);
     app.queue(Job::Regen(vec![id]));
 }
@@ -1003,50 +1030,6 @@ fn thumb_worker(h: AppHandle, db: Arc<Db>, rx: mpsc::Receiver<Job>) {
     }
 }
 
-/// Rescans folders the watcher reported; drops folders that no longer exist.
-fn on_folders_changed(h: &AppHandle, roots: &[PathBuf], dirs: Vec<PathBuf>) {
-    let app = h.state::<App>();
-    for d in &dirs {
-        if d.is_dir() {
-            if let Some(root) = watch::root_of(roots, d) {
-                let _ = scan::scan_folder(&app.db, d, &root.to_string_lossy());
-            }
-        }
-        if let Ok(folders) = app.db.folders() {
-            for f in folders {
-                let fp = Path::new(&f.path);
-                if fp.starts_with(d) && !fp.is_dir() {
-                    let _ = app.db.remove_folder_tree(&f.path);
-                }
-            }
-        }
-    }
-    let _ = h.emit("library-changed", ());
-    app.queue(Job::Pending);
-}
-
-fn startup(h: AppHandle, roots: Vec<PathBuf>) {
-    let app = h.state::<App>();
-    for root in &roots {
-        if !root.is_dir() {
-            continue;
-        }
-        emit_status(&h, &format!("Scanning {}…", root.display()));
-        let _ = scan::scan_root(&app.db, root);
-        let _ = h.emit("library-changed", ());
-    }
-    emit_status(&h, "");
-    mark("scan-done");
-    app.queue(Job::Pending);
-    let h2 = h.clone();
-    let roots2 = roots.clone();
-    let existing: Vec<PathBuf> = roots.into_iter().filter(|r| r.is_dir()).collect();
-    match watch::start(&existing, move |dirs| on_folders_changed(&h2, &roots2, dirs)) {
-        Ok(w) => *app.watcher.lock().expect("watcher lock") = Some(w),
-        Err(e) => emit_status(&h, &format!("Not watching for changes: {e}")),
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     mark("process-start");
@@ -1062,6 +1045,7 @@ pub fn run() {
         fx: Mutex::new(None),
         version: AtomicU64::new(0),
         watcher: Mutex::new(None),
+        settings: Mutex::new(casapic_core::settings::Settings::load()),
         prepared: Mutex::new(std::collections::VecDeque::new()),
     };
     tauri::Builder::default()
@@ -1077,7 +1061,7 @@ pub fn run() {
             let h = a.handle().clone();
             let h2 = h.clone();
             std::thread::spawn(move || thumb_worker(h2, db, rx));
-            std::thread::spawn(move || startup(h, paths::roots()));
+            std::thread::spawn(move || folders::sync_library(&h, false));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1107,6 +1091,28 @@ pub fn run() {
             timing_mark,
             timing_mode,
             quit,
+            folders::settings_get,
+            folders::fm_list,
+            folders::fm_save,
+            folders::fm_confirm,
+            folders::add_folder,
+            folders::remove_folder,
+            folders::options_save,
+            folders::set_folder_description,
+            folders::set_folder_sort,
+            folders::open_folder,
+            files::rename_photo,
+            files::delete_photos,
+            files::transfer_photos,
+            files::move_to_new_folder,
+            files::new_folder,
+            files::rename_folder,
+            files::move_folder,
+            files::delete_folder,
+            files::save_copy,
+            files::adjust_dates,
+            files::clear_thumb_cache,
+            files::open_with,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CasaPic");

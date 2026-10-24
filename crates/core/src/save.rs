@@ -44,13 +44,28 @@ pub fn save(folder: &Path, file_name: &str, orientation: i64, ops: &[Op]) -> Res
         bail!("nothing to save: the photo has no edits");
     }
     let photo = folder.join(file_name);
-    let backup = backup_of(folder, file_name);
     let jpeg = render_jpeg(&photo, orientation, ops, &ExportOptions { max_edge: None, quality: QUALITY })?;
-    let tmp = folder.join(format!(".{file_name}.casapic-save"));
-    std::fs::write(&tmp, &jpeg).with_context(|| format!("write {}", tmp.display()))?;
+    let first_save = install(folder, file_name, &jpeg)?;
 
-    let first_save = !backup.exists();
-    if first_save {
+    // the recipe that turns the original into the saved picture
+    let before = if first_save { String::new() } else { sidecar::read(&originals_dir(folder)).remove(file_name).unwrap_or_default().filters };
+    let total = format!("{before}{}", recipe::to_string(ops));
+    sidecar::update(&originals_dir(folder), file_name, |e| e.filters = total)?;
+    sidecar::update(folder, file_name, |e| e.filters.clear())?;
+    Ok(())
+}
+
+/// Replaces the photo file with `bytes`, keeping the untouched original first (only the first
+/// time: a kept original is never replaced). Returns whether this was the first change.
+/// Used by Save and by Adjust Date and Time.
+pub fn install(folder: &Path, file_name: &str, bytes: &[u8]) -> Result<bool> {
+    let photo = folder.join(file_name);
+    let backup = backup_of(folder, file_name);
+    let tmp = folder.join(format!(".{file_name}.casapic-save"));
+    std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+
+    let first = !backup.exists();
+    if first {
         let dir = originals_dir(folder);
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         sidecar::set_hidden(&dir, true);
@@ -60,19 +75,13 @@ pub fn save(folder: &Path, file_name: &str, orientation: i64, ops: &[Op]) -> Res
         }
     }
     if let Err(e) = std::fs::rename(&tmp, &photo) {
-        if first_save {
+        if first {
             let _ = std::fs::rename(&backup, &photo);
         }
         let _ = std::fs::remove_file(&tmp);
         return Err(e).with_context(|| format!("replace {}", photo.display()));
     }
-
-    // the recipe that turns the original into the saved picture
-    let before = if first_save { String::new() } else { sidecar::read(&originals_dir(folder)).remove(file_name).unwrap_or_default().filters };
-    let total = format!("{before}{}", recipe::to_string(ops));
-    sidecar::update(&originals_dir(folder), file_name, |e| e.filters = total)?;
-    sidecar::update(folder, file_name, |e| e.filters.clear())?;
-    Ok(())
+    Ok(first)
 }
 
 /// Puts the original back (byte for byte) and forgets the saved edits. Returns false when the

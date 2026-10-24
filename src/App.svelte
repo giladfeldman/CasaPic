@@ -10,8 +10,16 @@
   import Tray from "./components/Tray.svelte";
   import EditView from "./components/EditView.svelte";
   import ExportDialog from "./components/ExportDialog.svelte";
+  import FolderManager from "./components/FolderManager.svelte";
+  import Ask from "./components/Ask.svelte";
+  import OptionsDialog from "./components/OptionsDialog.svelte";
+  import DateDialog from "./components/DateDialog.svelte";
+  import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+  import type { FolderSort } from "./lib/store.svelte";
 
   let grid: Grid | undefined = $state();
+  /** the Folder Manager opened by itself on the very first launch (choice 4a) */
+  let firstRun = $state(false);
 
   const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
@@ -43,6 +51,13 @@
 
   onMount(() => {
     store.reload().then(timing);
+    store.loadSettings();
+    api.settings().then((s) => {
+      if (!s.folders_confirmed) {
+        firstRun = true;
+        store.folderManager = true;
+      }
+    });
     const off = [
       listen("library-changed", () => store.reload()),
       listen<number[]>("thumbs-updated", (e) => store.thumbsChanged(e.payload)),
@@ -59,6 +74,12 @@
     store.select(id);
     store.view = "edit";
   }
+  async function addFolder() {
+    const dir = await pickFolder({ directory: true, title: "Add Folder to CasaPic" });
+    if (typeof dir === "string") await api.addFolder(dir).catch((e) => (store.message = String(e)));
+  }
+  const FOLDER_SORTS: [FolderSort, string][] = [["date", "Creation Date"], ["changed", "Recent Changes"], ["size", "Size"], ["name", "Name"]];
+
   function exportPicked() {
     const ids = store.picked();
     if (ids.length) store.exportFor = ids;
@@ -80,8 +101,19 @@
     {
       label: "File",
       items: [
+        { label: "Add Folder to CasaPic…", keys: "Ctrl+O", run: addFolder },
+        "-",
+        { label: "Save a Copy", run: () => store.saveCopy(), enabled: store.picked().length === 1 },
+        { label: "Save As…", run: () => store.saveAs(), enabled: store.picked().length === 1 },
         { label: "Export Picture to Folder…", keys: "Ctrl+Shift+S", run: exportPicked, enabled: has() },
+        "-",
+        { label: "Rename…", keys: "F2", run: () => store.renamePicked(), enabled: store.picked().length === 1 },
+        { label: "Delete from Disk", keys: "Del", run: () => store.deletePicked(), enabled: has() },
+        { label: "Move to New Folder…", run: () => store.moveToNewFolder(), enabled: has() },
         { label: "Locate on Disk", keys: "Ctrl+Enter", run: () => api.locate(one()), enabled: has() },
+        { label: "Open in an Editor", keys: "Ctrl+Shift+O", run: () => store.openWith("editor"), enabled: has() },
+        { label: "Open With…", run: () => store.openWith("choose"), enabled: has() },
+        { label: "Copy Full Path", run: () => store.copyPath(), enabled: has() },
         "-",
         { label: "Exit", run: () => api.quit() },
       ],
@@ -89,6 +121,10 @@
     {
       label: "Edit",
       items: [
+        { label: "Cut", keys: "Ctrl+X", run: () => store.cutOrCopy(true), enabled: has() },
+        { label: "Copy", keys: "Ctrl+C", run: () => store.cutOrCopy(false), enabled: has() },
+        { label: "Paste into Current Folder", keys: "Ctrl+V", run: () => store.paste(), enabled: !!store.clip && store.activeFolder != null },
+        "-",
         { label: "Select All", keys: "Ctrl+A", run: () => store.selectAll() },
         { label: "Select Starred", run: () => store.selectStarred() },
         { label: "Invert Selection", keys: "Ctrl+I", run: () => store.invertSelection() },
@@ -105,6 +141,11 @@
         { label: "Normal Thumbnails", keys: "Ctrl+2", run: () => store.setThumbSize(140) },
         "-",
         { label: "Properties", keys: "Alt+Enter", run: () => store.toggleProperties(), checked: store.showProperties },
+        "-",
+        { label: "Folder View: Flat List", run: () => store.setFolderView("year"), checked: store.folderView === "year" },
+        { label: "Folder View: Tree", run: () => store.setFolderView("tree"), checked: store.folderView === "tree" },
+        ...FOLDER_SORTS.map(([k, label]) => ({ label: `Sort Folders by ${label}`, run: () => store.setFolderSort(k), checked: store.folderSort === k })),
+        { label: "Sort Folders in Reverse", run: () => store.toggleFolderReverse(), checked: store.folderReverse },
       ],
     },
     {
@@ -114,11 +155,19 @@
         { label: "Rotate Clockwise", keys: "Ctrl+R", run: () => store.rotate(1), enabled: has() },
         { label: "Rotate Counterclockwise", keys: "Ctrl+Shift+R", run: () => store.rotate(-1), enabled: has() },
         { label: "Star / Unstar", run: () => store.toggleStar(), enabled: has() },
+        { label: "Adjust Date and Time…", run: () => (store.dateFor = store.picked()), enabled: has() },
         "-",
         { label: "Copy All Effects", keys: "Ctrl+Shift+C", run: () => store.copyEffects(), enabled: store.picked().length === 1 },
         { label: "Paste All Effects", keys: "Ctrl+Shift+V", run: () => store.pasteEffects(), enabled: has() && !!store.effectsClip },
         "-",
         ...BATCH.map(([label, kind]) => ({ label: `Batch Edit: ${label}`, run: () => store.batch(kind, label), enabled: has() })),
+      ],
+    },
+    {
+      label: "Tools",
+      items: [
+        { label: "Folder Manager…", run: () => (store.folderManager = true) },
+        { label: "Options…", run: () => (store.optionsOpen = true) },
       ],
     },
     {
@@ -145,7 +194,14 @@
     else if (ctrl && k === "r") store.rotate(e.shiftKey ? -1 : 1);
     else if (ctrl && e.shiftKey && k === "c") store.copyEffects();
     else if (ctrl && e.shiftKey && k === "v") store.pasteEffects();
+    else if (ctrl && e.shiftKey && k === "o") store.openWith("editor");
+    else if (ctrl && k === "x") store.cutOrCopy(true);
+    else if (ctrl && k === "c") store.cutOrCopy(false);
+    else if (ctrl && k === "v") store.paste();
+    else if (k === "f2") store.renamePicked();
+    else if (k === "delete") store.deletePicked();
     else if (ctrl && e.shiftKey && k === "s") exportPicked();
+    else if (ctrl && !e.shiftKey && k === "o") addFolder();
     else if (ctrl && k === "1") store.setThumbSize(80);
     else if (ctrl && k === "2") store.setThumbSize(140);
     else if (ctrl && k === "3") openEdit();
@@ -172,6 +228,12 @@
     <div class="main"><EditView /></div>
   {/if}
   <Tray onexport={exportPicked} />
+  {#if store.prompt || store.confirm}<Ask />{/if}
+  {#if store.optionsOpen}<OptionsDialog onclose={() => (store.optionsOpen = false)} />{/if}
+  {#if store.dateFor}<DateDialog ids={store.dateFor} onclose={() => (store.dateFor = null)} />{/if}
+  {#if store.folderManager}
+    <FolderManager first={firstRun} onclose={() => { store.folderManager = false; firstRun = false; }} />
+  {/if}
   {#if store.exportFor}<ExportDialog ids={store.exportFor} onclose={() => (store.exportFor = null)} />{/if}
   {#if store.message}
     <div class="scrim" role="presentation" onclick={() => (store.message = null)}>

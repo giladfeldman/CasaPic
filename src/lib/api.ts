@@ -9,8 +9,30 @@ export interface Folder {
   path: string;
   date: number | null;
   first: number | null;
+  /** "Add a description" text */
+  description: string;
+  /** photo order: "" = date, "name", "size"; "-" prefix = reversed */
+  sort: string;
+  /** the Folder Manager folder it is scanned from */
+  root: string;
+  /** newest file change (seconds) */
+  changed: number;
+  /** total bytes of its photos */
+  bytes: number;
   photos: PhotoRow[];
 }
+
+export type Scan = "always" | "once" | "remove";
+export interface Rule { path: string; scan: Scan }
+export interface Options {
+  confirm_delete: boolean;
+  single_click_exit_edit: boolean;
+  file_types: string[];
+  slide_seconds: number;
+  slide_transition: string;
+}
+export interface Settings { folders: Rule[]; folders_confirmed: boolean; options: Options }
+export interface FmNode { name: string; path: string; more: boolean }
 
 export interface Photo {
   id: number;
@@ -55,6 +77,28 @@ export const api = {
   rotate: (ids: number[], turns: number) => invoke<void>("rotate", { ids, turns }),
   counts: () => invoke<{ folders: number; photos: number }>("counts"),
   locate: (id: number) => invoke<void>("locate_on_disk", { id }),
+  settings: () => invoke<Settings>("settings_get"),
+  fmList: (path: string | null) => invoke<FmNode[]>("fm_list", { path }),
+  fmSave: (rules: Rule[]) => invoke<void>("fm_save", { rules }),
+  fmConfirm: () => invoke<void>("fm_confirm"),
+  addFolder: (path: string) => invoke<void>("add_folder", { path }),
+  removeFolder: (path: string) => invoke<void>("remove_folder", { path }),
+  optionsSave: (options: Options) => invoke<void>("options_save", { options }),
+  setFolderDescription: (path: string, text: string) => invoke<void>("set_folder_description", { path, text }),
+  setFolderSort: (path: string, sort: string) => invoke<void>("set_folder_sort", { path, sort }),
+  openFolder: (path: string) => invoke<void>("open_folder", { path }),
+  renamePhoto: (id: number, name: string) => invoke<string>("rename_photo", { id, name }),
+  deletePhotos: (ids: number[]) => invoke<number>("delete_photos", { ids }),
+  transferPhotos: (ids: number[], dest: string, copy: boolean) => invoke<number>("transfer_photos", { ids, dest, copy }),
+  moveToNewFolder: (ids: number[], name: string) => invoke<string>("move_to_new_folder", { ids, name }),
+  newFolder: (parent: string, name: string) => invoke<string>("new_folder", { parent, name }),
+  renameFolder: (path: string, name: string) => invoke<string>("rename_folder", { path, name }),
+  moveFolder: (path: string, into: string) => invoke<string>("move_folder", { path, into }),
+  deleteFolder: (path: string) => invoke<void>("delete_folder", { path }),
+  saveCopy: (id: number, dest: string | null) => invoke<string>("save_copy", { id, dest }),
+  adjustDates: (ids: number[], shift: number) => invoke<number>("adjust_dates", { ids, shift }),
+  clearThumbCache: () => invoke<number>("clear_thumb_cache"),
+  openWith: (id: number, how: "editor" | "choose") => invoke<void>("open_with", { id, how }),
   editOpen: (id: number, edge: number) => invoke<EditState>("edit_open", { id, edge }),
   prepare: (ids: number[], edge: number) => invoke<void>("edit_prepare", { ids, edge }),
   editApply: (kind: Fix, params: number[] = []) => invoke<EditState>("edit_apply", { kind, params }),
