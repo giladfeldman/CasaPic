@@ -9,6 +9,7 @@
   let p = $state<Photo | null>(null);
   $effect(() => {
     const id = store.focus;
+    void store.thumbV[id ?? -1]; // refresh after an edit (a rotate swaps width and height)
     if (id == null) p = null;
     else api.photo(id).then((x) => (p = x), () => (p = null));
   });

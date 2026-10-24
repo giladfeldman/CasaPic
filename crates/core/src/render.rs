@@ -9,18 +9,32 @@ use rayon::prelude::*;
 use crate::recipe::Op;
 
 // The automatic fixes follow rules measured from Picasa 3.9's own exports of lab photos
-// (tools/parity, docs/results-build1.md): each one is a straight-line change per colour.
+// (tools/parity, docs/results-build1.md). Auto Contrast, I'm Feeling Lucky and Auto Color
+// are straight-line changes per colour; Fill Light is a curve per colour, weighted by the
+// pixel's brightness.
 
 /// Share of pixels allowed to clip at each end when stretching levels (0.5%).
 const CLIP: f32 = 0.005;
 /// I'm Feeling Lucky moves each colour's black and white points this far from the shared
 /// points toward that colour's own (fitted: about 0.7).
 const LUCKY_COLOR: f32 = 0.7;
-/// Auto Color's largest change to one colour's gain (fitted: about 12%).
-const COLOR_MAX_GAIN: f32 = 0.12;
-/// Fill Light raises brightness to the power 1/(1 + FILL_K * amount). Fitted at one amount
-/// only (0.5 gives about 0.6); the shape at other amounts is not yet confirmed.
-const FILL_K: f32 = 1.3;
+/// Auto Color (chosen on 17 lab photos by colour difference, checked leaving each photo out):
+/// gain = (reference / colour's average)^COLOR_POWER over pixels brighter than COLOR_MIN_LUMA,
+/// kept within COLOR_RANGE, then scaled so overall brightness is unchanged.
+const COLOR_POWER: f32 = 0.9;
+const COLOR_RANGE: (f32, f32) = (0.88, 1.12);
+const COLOR_MIN_LUMA: f32 = 0.3;
+/// Fill Light, measured at five slider amounts (12 lab photos each): each colour value c
+/// moves toward K * c^gamma, by (1 - brightness). Rows: amount, K, gamma; straight lines
+/// between them.
+const FILL_TABLE: [(f32, f32, f32); 6] = [
+    (0.0, 1.0, 1.0),
+    (0.15, 1.1023, 0.9301),
+    (0.3, 1.2108, 0.848),
+    (0.504673, 1.358, 0.7271),
+    (0.7, 1.4828, 0.6017),
+    (1.0, 1.5821, 0.3894),
+];
 /// Luminance weights (Rec. 601, as used by JPEG).
 const WR: f32 = 0.299;
 const WG: f32 = 0.587;
@@ -166,22 +180,29 @@ pub fn contrast_op(img: &Img) -> Op {
     Op::AutoContrast { lo, hi }
 }
 
-/// Auto Color: one gain per colour, no offset. Each colour's average moves halfway (in ratio)
-/// toward the average of all three, by at most 12%; brightness stays about the same.
+/// Auto Color: one gain per colour, no offset. Each colour's average over the pixels that are
+/// not dark is pulled toward the geometric mean of the three, within 0.88x-1.12x; the gains are
+/// then scaled so brightness (Rec. 601) stays the same. An approximation of Picasa's rule,
+/// not an exact match (docs/results-build1.md).
 pub fn color_op(img: &Img) -> Op {
-    let n = (img.w * img.h).max(1) as f64;
-    let mut m = [0f64; 3];
-    for p in img.px.chunks(3) {
-        for c in 0..3 {
-            m[c] += p[c] as f64;
+    let mean_over = |min_luma: f32| {
+        let (mut m, mut k) = ([0f64; 3], 0usize);
+        for p in img.px.chunks(3).filter(|p| (min_luma..1.0).contains(&luma(p))) {
+            for c in 0..3 {
+                m[c] += p[c] as f64;
+            }
+            k += 1;
         }
+        (m.map(|v| (v / k.max(1) as f64).max(1e-3) as f32), k)
+    };
+    let (mut m, k) = mean_over(COLOR_MIN_LUMA);
+    if k * 1000 < img.w * img.h {
+        m = mean_over(f32::MIN).0; // almost nothing bright: use every pixel
     }
-    let m = m.map(|v| v / n);
-    let grey = (m[0] + m[1] + m[2]) / 3.0;
-    let gain = m.map(|v| {
-        if v > 1e-3 { ((grey / v).sqrt() as f32).clamp(1.0 - COLOR_MAX_GAIN, 1.0 + COLOR_MAX_GAIN) } else { 1.0 }
-    });
-    Op::AutoColor { gain }
+    let reference = (m[0] * m[1] * m[2]).cbrt();
+    let raw = m.map(|v| (reference / v).powf(COLOR_POWER).clamp(COLOR_RANGE.0, COLOR_RANGE.1));
+    let k = WR * raw[0] + WG * raw[1] + WB * raw[2];
+    Op::AutoColor { gain: raw.map(|g| g / k) }
 }
 
 /// Never stretch a nearly flat picture into noise.
@@ -238,29 +259,43 @@ fn gains(img: &mut Img, g: [f32; 3]) {
     });
 }
 
-/// Brightens shadows and mid-tones most, highlights least: brightness to the power
-/// 1/(1 + FILL_K * a). The same factor is applied to all three colours, so hues stay.
-pub fn fill_curve(y: f32, a: f32) -> f32 {
-    y.clamp(0.0, 1.0).powf(1.0 / (1.0 + FILL_K * a.max(0.0)))
+/// Fill Light's (K, gamma) for an amount, between the measured rows of FILL_TABLE.
+fn fill_params(a: f32) -> (f32, f32) {
+    let a = a.clamp(0.0, 1.0);
+    for w in FILL_TABLE.windows(2) {
+        let ((a0, k0, g0), (a1, k1, g1)) = (w[0], w[1]);
+        if a <= a1 {
+            let t = (a - a0) / (a1 - a0);
+            return (k0 + t * (k1 - k0), g0 + t * (g1 - g0));
+        }
+    }
+    let (_, k, g) = FILL_TABLE[FILL_TABLE.len() - 1];
+    (k, g)
+}
+
+/// Brightens dark colours most and leaves bright pixels nearly alone: each colour value c
+/// becomes c + (1 - brightness) * (K * c^gamma - c). Measured from Picasa: the lift works on
+/// each colour separately (not one factor for all three) and shrinks as the pixel brightens.
+pub fn fill_value(c: f32, y: f32, a: f32) -> f32 {
+    let (k, g) = fill_params(a);
+    fill_with(c, y, k, g)
+}
+
+fn fill_with(c: f32, y: f32, k: f32, g: f32) -> f32 {
+    let c0 = c.max(0.0);
+    c + (1.0 - y.clamp(0.0, 1.0)) * (k * c0.powf(g) - c0)
 }
 
 fn fill_light(img: &mut Img, a: f32) {
     if a <= 0.0 {
         return;
     }
+    let (k, g) = fill_params(a);
     img.rows_mut().for_each(|row| {
         for p in row.chunks_mut(3) {
-            let y = luma(p).max(0.0);
-            let y2 = fill_curve(y, a);
-            if y > 0.02 {
-                let r = y2 / y;
-                for v in p.iter_mut() {
-                    *v *= r;
-                }
-            } else {
-                for v in p.iter_mut() {
-                    *v += y2 - y;
-                }
+            let y = luma(p);
+            for v in p.iter_mut() {
+                *v = fill_with(*v, y, k, g);
             }
         }
     });
@@ -445,21 +480,48 @@ mod tests {
             let m = [mean(img, 0), mean(img, 1), mean(img, 2)];
             m.iter().cloned().fold(0f32, f32::max) - m.iter().cloned().fold(1f32, f32::min)
         };
-        // half-strength correction, as Picasa's
+        // most of the cast removed
         assert!(spread(&r) < spread(&a) * 0.6, "cast {} -> {}", spread(&a), spread(&r));
         let ly = |img: &Img| img.px.chunks(3).map(luma).sum::<f32>() / (img.w * img.h) as f32;
         assert!((ly(&r) - ly(&a)).abs() < 0.02);
     }
 
     #[test]
-    fn fill_light_lifts_shadows_more_than_highlights() {
-        assert!(fill_curve(0.25, 1.0) - 0.25 > 0.15);
-        assert!(fill_curve(0.95, 1.0) - 0.95 < 0.04);
-        // measured in Picasa at amount 0.504673 (lab photo base_11)
-        for (y, want) in [(0.25, 0.44), (0.54, 0.69), (0.85, 0.90)] {
-            assert!((fill_curve(y, 0.504673) - want).abs() < 0.03, "{y}: {}", fill_curve(y, 0.504673));
+    fn fill_light_matches_picasa_pixels() {
+        // pixels from lab photo base_2, before and after Picasa 3.9's Fill Light (0-255)
+        let cases = [
+            ([8.0, 1.0, 34.0], 1.0, [98.0, 42.0, 175.0]),
+            ([144.0, 73.0, 91.0], 1.0, [255.0, 183.0, 203.0]),
+            ([48.0, 1.0, 107.0], 0.3, [69.0, 0.0, 142.0]),
+            ([161.0, 35.0, 46.0], 0.3, [197.0, 52.0, 69.0]),
+        ];
+        for (input, amount, want) in cases {
+            let px: Vec<f32> = input.iter().map(|v| v / 255.0).collect();
+            let r = apply(&Img { w: 1, h: 1, px }, &[Op::Fill(amount)]);
+            for c in 0..3 {
+                let got = r.px[c].clamp(0.0, 1.0) * 255.0;
+                assert!((got - want[c]).abs() <= 6.0, "{input:?} at {amount}: colour {c} {got:.0}, Picasa {}", want[c]);
+            }
         }
-        assert_eq!(fill_curve(0.4, 0.0), 0.4);
-        assert!(fill_curve(1.0, 1.0) <= 1.0);
+        // no change at 0; white stays white
+        assert_eq!(fill_value(0.4, 0.4, 0.0), 0.4);
+        assert!((fill_value(1.0, 1.0, 1.0) - 1.0).abs() < 1e-6);
+    }
+
+    /// Fill Light slider speed on an Edit-view-sized picture (2048 x 1536).
+    /// Run: cargo test --release -p casapic-core fill_light_speed -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn fill_light_speed() {
+        let img = Img { w: 2048, h: 1536, px: (0..2048 * 1536 * 3).map(|i| (i % 251) as f32 / 250.0).collect() };
+        let mut times: Vec<f64> = (0..10)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                let _ = apply_one(img.clone(), &Op::Fill(0.5));
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        times.sort_by(|a, b| a.total_cmp(b));
+        println!("fill light 2048x1536: median {:.1} ms, slowest {:.1} ms", times[5], times[9]);
     }
 }

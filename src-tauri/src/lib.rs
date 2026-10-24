@@ -280,8 +280,11 @@ fn photo(app: State<'_, App>, id: i64) -> Res<PhotoOut> {
     let p = app.db.photo(id).map_err(err)?.ok_or("photo not found")?;
     let path = app.db.photo_path(id).map_err(err)?.ok_or("photo not found")?;
     let folder = path.parent().and_then(|f| f.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    // width/height as shown (upright)
-    let (width, height) = if (5..=8).contains(&p.orientation) { (p.height, p.width) } else { (p.width, p.height) };
+    // width/height as shown: upright, then after the photo's edits (rotate, crop, straighten)
+    let (w, h) = if (5..=8).contains(&p.orientation) { (p.height, p.width) } else { (p.width, p.height) };
+    let ops = recipe::parse(&p.recipe);
+    let (w, h) = render::output_size(w as f32, h as f32, &ops);
+    let (width, height) = (w.round() as i64, h.round() as i64);
     Ok(PhotoOut {
         id,
         name: p.name,
@@ -294,7 +297,7 @@ fn photo(app: State<'_, App>, id: i64) -> Res<PhotoOut> {
         mtime: p.mtime,
         camera: p.camera,
         star: p.star,
-        edits: recipe::parse(&p.recipe).iter().map(|o| o.label().to_string()).collect(),
+        edits: ops.iter().map(|o| o.label().to_string()).collect(),
     })
 }
 
