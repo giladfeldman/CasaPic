@@ -9,3 +9,5 @@ dist/
 target/
 src-tauri/gen/schemas/
 *.tsbuildinfo
+
+communications/

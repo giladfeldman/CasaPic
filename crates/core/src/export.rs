@@ -23,30 +23,7 @@ pub struct ExportOptions {
 /// Exports `src` with `ops` applied into `dest_dir`, never overwriting: returns the new path.
 pub fn export(src: &Path, orientation: i64, ops: &[Op], dest_dir: &Path, opt: &ExportOptions) -> Result<PathBuf> {
     std::fs::create_dir_all(dest_dir)?;
-    let (w0, h0) = crate::wic::dimensions(src)?;
-    // upright size, then size after the recipe
-    let (uw, uh) = if orientation >= 5 { (h0 as f32, w0 as f32) } else { (w0 as f32, h0 as f32) };
-    let (fw, fh) = render::output_size(uw, uh, ops);
-    let decode_edge = match opt.max_edge {
-        Some(m) if fw.max(fh) > m as f32 => {
-            let scale = m as f32 / fw.max(fh);
-            Some(((w0.max(h0) as f32) * scale).ceil() as u32 + 2)
-        }
-        _ => None,
-    };
-    let base = crate::wic::orient(crate::wic::decode(src, decode_edge)?, orientation);
-    let mut out = render::apply(&Img::from_rgb8(&base), ops).to_rgb8();
-    if let Some(m) = opt.max_edge {
-        if out.width().max(out.height()) > m {
-            let (tw, th) = crate::wic::fit(out.width(), out.height(), m);
-            out = image::imageops::resize(&out, tw, th, image::imageops::FilterType::CatmullRom);
-        }
-    }
-    let jpeg = crate::thumbs::encode_jpeg(&out, opt.quality.clamp(1, 100))?;
-    let jpeg = match original_exif(src) {
-        Some(app1) => insert_app1(&jpeg, &app1),
-        None => jpeg,
-    };
+    let jpeg = render_jpeg(src, orientation, ops, opt)?;
     let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "photo".into());
     let mut dest = dest_dir.join(format!("{stem}.jpg"));
     let mut n = 1;
@@ -59,6 +36,35 @@ pub fn export(src: &Path, orientation: i64, ops: &[Op], dest_dir: &Path, opt: &E
     }
     std::fs::write(&dest, jpeg).with_context(|| format!("write {}", dest.display()))?;
     Ok(dest)
+}
+
+/// `src` with `ops` applied, upright, encoded as JPEG carrying the original's EXIF.
+pub fn render_jpeg(src: &Path, orientation: i64, ops: &[Op], opt: &ExportOptions) -> Result<Vec<u8>> {
+    let (w0, h0) = crate::wic::dimensions(src)?;
+    // upright size, then size after the recipe
+    let (uw, uh) = if orientation >= 5 { (h0 as f32, w0 as f32) } else { (w0 as f32, h0 as f32) };
+    let (fw, fh) = render::output_size(uw, uh, ops);
+    let decode_edge = match opt.max_edge {
+        Some(m) if fw.max(fh) > m as f32 => {
+            let scale = m as f32 / fw.max(fh);
+            Some(((w0.max(h0) as f32) * scale).ceil() as u32 + 2)
+        }
+        _ => None,
+    };
+    let base = crate::wic::orient(crate::wic::decode(src, decode_edge)?, orientation);
+    let scale = base.width().max(base.height()) as f32 / w0.max(h0).max(1) as f32;
+    let mut out = render::apply_scaled(&Img::from_rgb8(&base), ops, scale.min(1.0)).to_rgb8();
+    if let Some(m) = opt.max_edge {
+        if out.width().max(out.height()) > m {
+            let (tw, th) = crate::wic::fit(out.width(), out.height(), m);
+            out = image::imageops::resize(&out, tw, th, image::imageops::FilterType::CatmullRom);
+        }
+    }
+    let jpeg = crate::thumbs::encode_jpeg(&out, opt.quality.clamp(1, 100))?;
+    Ok(match original_exif(src) {
+        Some(app1) => insert_app1(&jpeg, &app1),
+        None => jpeg,
+    })
 }
 
 /// The original's EXIF APP1 segment, patched (orientation = 1, embedded preview unlinked).

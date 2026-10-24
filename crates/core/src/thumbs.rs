@@ -41,7 +41,9 @@ pub fn make_thumb(path: &Path, orientation: i64, recipe: &str) -> Result<Vec<u8>
     if ops.is_empty() {
         return encode_jpeg(&img, 85);
     }
-    let mut out = crate::render::apply(&crate::render::Img::from_rgb8(&img), &ops).to_rgb8();
+    let (w0, h0) = crate::wic::dimensions(path)?;
+    let scale = (img.width().max(img.height()) as f32 / w0.max(h0).max(1) as f32).min(1.0);
+    let mut out = crate::render::apply_scaled(&crate::render::Img::from_rgb8(&img), &ops, scale).to_rgb8();
     if out.width().max(out.height()) > EDGE {
         let (tw, th) = crate::wic::fit(out.width(), out.height(), EDGE);
         out = image::imageops::resize(&out, tw, th, image::imageops::FilterType::Triangle);

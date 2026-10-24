@@ -108,7 +108,7 @@ fn write(folder: &Path, entries: &HashMap<String, Entry>) -> Result<()> {
     Ok(())
 }
 
-fn set_hidden(path: &Path, hidden: bool) {
+pub(crate) fn set_hidden(path: &Path, hidden: bool) {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_FLAGS_AND_ATTRIBUTES, SetFileAttributesW,

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use casapic_core::db::Db;
 use casapic_core::recipe::{self, Op};
 use casapic_core::render::{self, Img};
-use casapic_core::{export, paths, scan, sidecar, thumbs, watch, wic};
+use casapic_core::{export, paths, save, scan, sidecar, thumbs, watch, wic};
 use rayon::prelude::*;
 use serde::Serialize;
 use tauri::http::{Response, StatusCode};
@@ -58,6 +58,8 @@ fn frame_of(rgb: &image::RgbImage) -> Res<Frame> {
 struct Prepared {
     recipe: String,
     rgb: Arc<image::RgbImage>,
+    /// pixels of `rgb` per pixel of the original photo
+    scale: f32,
     frame: Frame,
 }
 
@@ -66,9 +68,11 @@ fn prepare(db: &Db, id: i64, edge: u32) -> Res<Prepared> {
     let p = db.photo(id).map_err(err)?.ok_or("photo not found")?;
     let path = db.photo_path(id).map_err(err)?.ok_or("photo not found")?;
     let rgb = wic::orient(wic::decode(&path, Some(edge)).map_err(err)?, p.orientation);
+    let scale = (rgb.width().max(rgb.height()) as f32 / p.width.max(p.height).max(1) as f32).min(1.0);
     let ops = recipe::parse(&p.recipe);
-    let frame = if ops.is_empty() { frame_of(&rgb)? } else { frame_of(&render::apply(&Img::from_rgb8(&rgb), &ops).to_rgb8())? };
-    Ok(Prepared { recipe: p.recipe, rgb: Arc::new(rgb), frame })
+    let frame =
+        if ops.is_empty() { frame_of(&rgb)? } else { frame_of(&render::apply_scaled(&Img::from_rgb8(&rgb), &ops, scale).to_rgb8())? };
+    Ok(Prepared { recipe: p.recipe, rgb: Arc::new(rgb), scale, frame })
 }
 
 type Slot = Arc<std::sync::OnceLock<Option<Arc<Prepared>>>>;
@@ -76,17 +80,24 @@ type Slot = Arc<std::sync::OnceLock<Option<Arc<Prepared>>>>;
 /// One photo open in the Edit view, with its undo history.
 struct Session {
     photo_id: i64,
+    /// the decode size asked for (to reopen the photo after Save/Revert)
+    edge: u32,
     /// the upright original, decoded at screen size
     base_rgb: Arc<image::RgbImage>,
     /// the same as floats, made on the first edit
     base: Option<Img>,
+    /// half-size copy for quick previews while a slow effect's slider moves
+    small: Option<Img>,
+    /// pixels of the decoded picture per pixel of the original
+    scale: f32,
     /// every recipe state; `history[pos]` is the current one
     history: Vec<Vec<Op>>,
     /// `labels[i]` names the action that produced `history[i]`
     labels: Vec<String>,
     pos: usize,
-    /// render of the recipe minus a trailing Fill Light, so the slider stays fast
-    cache: Option<(Vec<Op>, Img)>,
+    /// renders of recipe prefixes (all but the last fix), so a slider only redoes its own fix:
+    /// (half size?, prefix, render); the last three used
+    cache: Vec<(bool, Vec<Op>, Img)>,
 }
 
 /// The photo's Fill Light amount, wherever it sits in the recipe (there is at most one).
@@ -109,11 +120,9 @@ fn with_fill(ops: &[Op], a: f32) -> Vec<Op> {
     out
 }
 
-fn split_fill(ops: &[Op]) -> (&[Op], Option<f32>) {
-    match ops.last() {
-        Some(Op::Fill(a)) => (&ops[..ops.len() - 1], Some(*a)),
-        _ => (ops, None),
-    }
+/// Effects whose sliders are previewed at half size while they move, then refined.
+fn is_slow(op: &Op) -> bool {
+    matches!(op, Op::Sharpen(_) | Op::Glow { .. } | Op::SoftFocus { .. } | Op::Grain { .. })
 }
 
 impl Session {
@@ -122,16 +131,62 @@ impl Session {
     }
 
     fn render(&mut self, ops: &[Op]) -> Img {
-        let (prefix, fill) = split_fill(ops);
-        if !matches!(&self.cache, Some((p, _)) if p.as_slice() == prefix) {
-            let base = self.base.get_or_insert_with(|| Img::from_rgb8(&self.base_rgb));
-            self.cache = Some((prefix.to_vec(), render::apply(base, prefix)));
-        }
-        let img = self.cache.as_ref().expect("cache just filled").1.clone();
-        match fill {
-            Some(a) => render::apply_one(img, &Op::Fill(a)),
+        self.render_at(ops, false)
+    }
+
+    /// Renders `ops`; `quick` uses the half-size copy (for a slider being dragged).
+    fn render_at(&mut self, ops: &[Op], quick: bool) -> Img {
+        let (prefix, last) = match ops.split_last() {
+            Some((l, p)) => (p, Some(l)),
+            None => (ops, None),
+        };
+        let scale = if quick { self.scale / 2.0 } else { self.scale };
+        let img = match self.cache.iter().position(|(q, p, _)| *q == quick && p.as_slice() == prefix) {
+            Some(i) => {
+                let hit = self.cache.remove(i);
+                let img = hit.2.clone();
+                self.cache.push(hit);
+                img
+            }
+            None => {
+                let base = if quick {
+                    let rgb = &self.base_rgb;
+                    self.small
+                        .get_or_insert_with(|| {
+                            let half = image::imageops::resize(
+                                rgb.as_ref(),
+                                (rgb.width() / 2).max(1),
+                                (rgb.height() / 2).max(1),
+                                image::imageops::FilterType::Triangle,
+                            );
+                            Img::from_rgb8(&half)
+                        })
+                        .clone()
+                } else {
+                    let rgb = &self.base_rgb;
+                    self.base.get_or_insert_with(|| Img::from_rgb8(rgb)).clone()
+                };
+                let img = render::apply_scaled(&base, prefix, scale);
+                self.cache.push((quick, prefix.to_vec(), img.clone()));
+                if self.cache.len() > 3 {
+                    self.cache.remove(0);
+                }
+                img
+            }
+        };
+        match last {
+            Some(op) => render::apply_one_scaled(img, op, scale),
             None => img,
         }
+    }
+
+    /// Records a new recipe state for Undo/Redo.
+    fn push(&mut self, ops: Vec<Op>, label: &str) {
+        self.history.truncate(self.pos + 1);
+        self.labels.truncate(self.pos + 1);
+        self.history.push(ops);
+        self.labels.push(label.to_string());
+        self.pos += 1;
     }
 }
 
@@ -140,6 +195,8 @@ pub struct App {
     jobs: Mutex<mpsc::Sender<Job>>,
     session: Mutex<Option<Session>>,
     preview: Mutex<Option<Frame>>,
+    /// the latest strip of effect thumbnails (JPEG)
+    fx: Mutex<Option<Arc<Vec<u8>>>>,
     version: AtomicU64,
     watcher: Mutex<Option<watch::Watch>>,
     /// photos prepared ahead, keyed by (id, edge); at most PREPARED_MAX, oldest dropped
@@ -324,6 +381,88 @@ fn rotate(app: State<'_, App>, ids: Vec<i64>, turns: i32) -> Res<()> {
     Ok(())
 }
 
+/// Copy All Effects: the photo's effects as recipe text (its Basic Fixes that change colour
+/// and tone, Tuning and the Effects tab; rotation, crop and straighten stay with the photo,
+/// as in Picasa).
+#[tauri::command(async)]
+fn copy_effects(app: State<'_, App>, id: i64) -> Res<String> {
+    let p = app.db.photo(id).map_err(err)?.ok_or("photo not found")?;
+    let ops: Vec<Op> = recipe::parse(&p.recipe).into_iter().filter(Op::is_effect).collect();
+    Ok(recipe::to_string(&ops))
+}
+
+/// Adds fixes to many photos' recipes. `make` gets a photo's current recipe and a way to render
+/// it (only called by fixes that look at the picture) and returns the fixes to add. Fixes are
+/// worked out in parallel; the sidecars are written one photo at a time.
+fn add_to_photos(app: &App, ids: &[i64], make: impl Fn(&[Op], &dyn Fn() -> Img) -> Res<Vec<Op>> + Sync) -> Res<usize> {
+    let jobs: Vec<(i64, Vec<Op>, PathBuf, i64)> = ids
+        .iter()
+        .map(|&id| {
+            let p = app.db.photo(id).map_err(err)?.ok_or("photo not found")?;
+            let path = app.db.photo_path(id).map_err(err)?.ok_or("photo not found")?;
+            Ok((id, recipe::parse(&p.recipe), path, p.orientation))
+        })
+        .collect::<Res<_>>()?;
+    let results: Vec<(i64, Vec<Op>)> = jobs
+        .par_iter()
+        .map(|(id, ops, path, orientation)| {
+            // the picture as it looks now, about 1024 pixels across (what the auto fixes measure)
+            let look = || -> Img {
+                let rgb = wic::decode(path, Some(1024)).map(|r| wic::orient(r, *orientation));
+                match rgb {
+                    Ok(rgb) => {
+                        let long = app.db.photo(*id).ok().flatten().map(|p| p.width.max(p.height)).unwrap_or(0);
+                        let scale = (rgb.width().max(rgb.height()) as f32 / long.max(1) as f32).min(1.0);
+                        render::apply_scaled(&Img::from_rgb8(&rgb), ops, scale)
+                    }
+                    Err(_) => Img::from_rgb8(&image::RgbImage::new(1, 1)),
+                }
+            };
+            let mut out = ops.clone();
+            out.extend(make(ops, &look)?);
+            Ok((*id, out))
+        })
+        .collect::<Res<_>>()?;
+    let mut changed = 0;
+    for ((id, new), (_, old, _, _)) in results.iter().zip(&jobs) {
+        if new != old {
+            app.save_recipe(*id, new)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// Paste All Effects: adds the copied effects (recipe text) on top of each photo's own edits.
+#[tauri::command(async)]
+fn paste_effects(app: State<'_, App>, ids: Vec<i64>, text: String) -> Res<usize> {
+    let add: Vec<Op> = ops_from_text(&text)?.into_iter().filter(Op::is_effect).collect();
+    if add.is_empty() {
+        return Err("no effects were copied".into());
+    }
+    add_to_photos(&app, &ids, |_, _| Ok(add.clone()))
+}
+
+/// Batch Edit: one fix on every photo in `ids`. `kind` is lucky | autocontrast | autocolor
+/// (each measured on that photo) or recipe text for a fixed effect (e.g. `sepia=1;`).
+#[tauri::command(async)]
+fn batch_edit(app: State<'_, App>, ids: Vec<i64>, kind: String) -> Res<usize> {
+    match kind.as_str() {
+        "lucky" | "autocontrast" | "autocolor" => add_to_photos(&app, &ids, |_, look| {
+            let img = look();
+            Ok(vec![match kind.as_str() {
+                "autocontrast" => render::contrast_op(&img),
+                "autocolor" => render::color_op(&img),
+                _ => render::lucky_op(&img),
+            }])
+        }),
+        text => {
+            let add = ops_from_text(text)?;
+            add_to_photos(&app, &ids, |_, _| Ok(add.clone()))
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct Counts {
     folders: i64,
@@ -364,6 +503,12 @@ struct EditState {
     edits: Vec<String>,
     /// histogram of the picture shown: 64 bins each for R, G, B
     hist: Arc<Vec<u32>>,
+    /// a half-size preview while a slider moves (the full one follows)
+    quick: bool,
+    /// the photo has a saved edit and its original is kept (Revert is possible)
+    saved: bool,
+    /// the recipe's last fix as recipe text (the Tuning tab shows its values when it is Tuning)
+    last: String,
 }
 
 /// Publishes `f` and describes the session around it.
@@ -379,6 +524,15 @@ fn state_with(app: &App, s: &Session, f: Frame) -> EditState {
         fill: fill_of(s.ops()),
         edits: s.ops().iter().map(|o| o.label().to_string()).collect(),
         hist,
+        quick: false,
+        last: s.ops().last().map(|o| recipe::to_string(std::slice::from_ref(o))).unwrap_or_default(),
+        saved: app
+            .db
+            .photo_path(s.photo_id)
+            .ok()
+            .flatten()
+            .and_then(|p| folder_and_name(&p).ok().map(|(f, n)| save::is_saved(f, &n)))
+            .unwrap_or(false),
     }
 }
 
@@ -396,6 +550,10 @@ fn edit_edge(edge: u32) -> u32 {
 /// Opens a photo in the Edit view, decoded so its longer edge is about `edge` pixels.
 #[tauri::command(async)]
 fn edit_open(app: State<'_, App>, id: i64, edge: u32) -> Res<EditState> {
+    open_session(&app, id, edge)
+}
+
+fn open_session(app: &App, id: i64, edge: u32) -> Res<EditState> {
     let t = std::time::Instant::now();
     let edge = edit_edge(edge);
     let recipe_now = app.db.photo(id).map_err(err)?.ok_or("photo not found")?.recipe;
@@ -407,14 +565,17 @@ fn edit_open(app: State<'_, App>, id: i64, edge: u32) -> Res<EditState> {
     }
     let s = Session {
         photo_id: id,
+        edge,
         base_rgb: pre.rgb.clone(),
         base: None,
+        scale: pre.scale,
         history: vec![recipe::parse(&recipe_now)],
         labels: vec![String::new()],
         pos: 0,
-        cache: None,
+        small: None,
+        cache: Vec::new(),
     };
-    let st = state_with(&app, &s, pre.frame.clone());
+    let st = state_with(app, &s, pre.frame.clone());
     *app.session.lock().map_err(err)? = Some(s);
     mark(&format!("edit-open-backend prepared-or-wait={hit:.1} total={:.1}", t.elapsed().as_secs_f32() * 1000.0));
     Ok(st)
@@ -483,15 +644,138 @@ fn edit_apply(app: State<'_, App>, kind: String, params: Vec<f32>) -> Res<EditSt
         other => return Err(format!("unknown fix: {other}")),
     };
     if ops.as_slice() != s.ops() {
-        s.history.truncate(s.pos + 1);
-        s.labels.truncate(s.pos + 1);
-        s.history.push(ops.clone());
-        s.labels.push(label.to_string());
-        s.pos += 1;
+        s.push(ops.clone(), label);
         app.save_recipe(s.photo_id, &ops)?;
     }
     state_of(&app, s)
 }
+
+/// Parses fixes written as recipe text (Picasa's entry format, e.g. `sat=1,0.3;`).
+fn ops_from_text(text: &str) -> Res<Vec<Op>> {
+    let ops = recipe::parse(text);
+    if let Some(Op::Unknown(u)) = ops.iter().find(|o| matches!(o, Op::Unknown(_))) {
+        return Err(format!("not a fix CasaPic knows: {u}"));
+    }
+    Ok(ops)
+}
+
+/// Shows the photo with `text` (fixes in recipe text) added on top, without saving or adding
+/// to Undo: the live preview while an effect's or the Tuning tab's sliders move. With
+/// `replace_last`, they replace the recipe's last fix instead (re-tuning the same Tuning
+/// entry). `quick` renders slow effects at half size while a slider is being dragged.
+#[tauri::command(async)]
+fn edit_try(app: State<'_, App>, text: String, replace_last: bool, quick: bool) -> Res<EditState> {
+    let mut guard = app.session.lock().map_err(err)?;
+    let s = guard.as_mut().ok_or("no photo open")?;
+    let extra = ops_from_text(&text)?;
+    let mut ops = s.ops().to_vec();
+    if replace_last {
+        ops.pop();
+    }
+    let quick = quick && extra.iter().any(is_slow);
+    ops.extend(extra);
+    let f = frame_of(&s.render_at(&ops, quick).to_rgb8())?;
+    let mut st = state_with(&app, s, f);
+    st.quick = quick;
+    Ok(st)
+}
+
+/// Adds `text` (fixes in recipe text) to the photo's recipe and saves it; with `replace_last`
+/// they replace the last fix (the Tuning tab edits one entry per visit, as Picasa does).
+#[tauri::command(async)]
+fn edit_add(app: State<'_, App>, text: String, replace_last: bool) -> Res<EditState> {
+    let mut guard = app.session.lock().map_err(err)?;
+    let s = guard.as_mut().ok_or("no photo open")?;
+    let extra = ops_from_text(&text)?;
+    let label = extra.first().map(|o| o.label()).unwrap_or("Edit");
+    let mut ops = s.ops().to_vec();
+    if replace_last {
+        ops.pop();
+    }
+    ops.extend(extra);
+    if ops.as_slice() != s.ops() {
+        s.push(ops.clone(), label);
+        app.save_recipe(s.photo_id, &ops)?;
+    }
+    state_of(&app, s)
+}
+
+/// The photo's colour around (x, y) (fractions of the picture), as rendered by its recipe
+/// without the last `skip` fixes: for the Neutral Color Picker.
+#[tauri::command(async)]
+fn edit_sample(app: State<'_, App>, x: f32, y: f32, skip: usize) -> Res<[f32; 3]> {
+    let mut guard = app.session.lock().map_err(err)?;
+    let s = guard.as_mut().ok_or("no photo open")?;
+    let ops = s.ops().to_vec();
+    let img = s.render(&ops[..ops.len().saturating_sub(skip)]);
+    let (cx, cy) = ((x.clamp(0.0, 1.0) * img.w as f32) as isize, (y.clamp(0.0, 1.0) * img.h as f32) as isize);
+    let (mut sum, mut n) = ([0f32; 3], 0f32);
+    for yy in (cy - 2)..=(cy + 2) {
+        for xx in (cx - 2)..=(cx + 2) {
+            if xx >= 0 && yy >= 0 && (xx as usize) < img.w && (yy as usize) < img.h {
+                let i = (yy as usize * img.w + xx as usize) * 3;
+                for c in 0..3 {
+                    sum[c] += img.px[i + c].clamp(0.0, 1.0);
+                }
+                n += 1.0;
+            }
+        }
+    }
+    Ok(sum.map(|v| v / n.max(1.0)))
+}
+
+/// The Tuning tab's one-click buttons, computed on the photo as rendered without the last
+/// `skip` fixes. "light": [highlights, shadows] = Auto Contrast's white and black points
+/// (matched the values Picasa wrote for a lab photo exactly). "color": the neutral colour
+/// R, G, B (0–1) from Auto Color's estimate of the cast (approximate, as Auto Color is).
+#[tauri::command(async)]
+fn edit_magic(app: State<'_, App>, kind: String, skip: usize) -> Res<Vec<f32>> {
+    let mut guard = app.session.lock().map_err(err)?;
+    let s = guard.as_mut().ok_or("no photo open")?;
+    let ops = s.ops().to_vec();
+    let img = s.render(&ops[..ops.len().saturating_sub(skip)]);
+    match kind.as_str() {
+        "light" => match render::contrast_op(&img) {
+            Op::AutoContrast { lo, hi } => Ok(vec![1.0 - hi, lo]),
+            _ => Err("no levels".into()),
+        },
+        "color" => match render::color_op(&img) {
+            Op::AutoColor { gain } => Ok(gain.map(|g| 0.5 / g.max(0.1)).to_vec()),
+            _ => Err("no colour".into()),
+        },
+        other => Err(format!("unknown button: {other}")),
+    }
+}
+
+/// Renders each of `texts` (one fix each) on a small square copy of the photo as it is now,
+/// side by side in one strip of `size`-pixel tiles: the effect buttons' live thumbnails.
+/// Returns a version number for `/fx/<version>`.
+#[tauri::command(async)]
+fn edit_fx_sheet(app: State<'_, App>, texts: Vec<String>, size: u32) -> Res<u64> {
+    let size = size.clamp(32, 256);
+    let (base, scale) = {
+        let mut guard = app.session.lock().map_err(err)?;
+        let s = guard.as_mut().ok_or("no photo open")?;
+        let ops = s.ops().to_vec();
+        let img = s.render(&ops).to_rgb8();
+        // fill the square, as Picasa's buttons do
+        let k = size as f32 / img.width().min(img.height()).max(1) as f32;
+        let (w, h) = (((img.width() as f32 * k).round() as u32).max(size), ((img.height() as f32 * k).round() as u32).max(size));
+        let r = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
+        let r = image::imageops::crop_imm(&r, (w - size) / 2, (h - size) / 2, size, size).to_image();
+        (Img::from_rgb8(&r), s.scale * k)
+    };
+    let tiles: Vec<image::RgbImage> =
+        texts.par_iter().map(|t| render::apply_scaled(&base, &recipe::parse(t), scale).to_rgb8()).collect();
+    let mut sheet = image::RgbImage::new(size * tiles.len().max(1) as u32, size);
+    for (i, tile) in tiles.iter().enumerate() {
+        image::imageops::replace(&mut sheet, tile, (i as u32 * size) as i64, 0);
+    }
+    let jpeg = thumbs::encode_jpeg(&sheet, 88).map_err(err)?;
+    *app.fx.lock().map_err(err)? = Some(Arc::new(jpeg));
+    Ok(app.version.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 
 /// Shows a Fill Light amount while the slider moves, without saving or adding to Undo.
 #[tauri::command(async)]
@@ -523,6 +807,56 @@ fn edit_undo(app: State<'_, App>, redo: bool) -> Res<EditState> {
         app.save_recipe(s.photo_id, &ops)?;
     }
     state_of(&app, s)
+}
+
+// ---------- Save / Revert ----------
+
+/// Re-reads a photo's folder after its file changed (size, date, orientation now upright) and
+/// makes a new thumbnail.
+fn photo_file_changed(app: &App, id: i64, folder: &Path) {
+    if let Some(root) = watch::root_of(&paths::roots(), folder) {
+        let _ = scan::scan_folder(&app.db, folder, &root.to_string_lossy());
+    }
+    app.forget(id);
+    app.queue(Job::Regen(vec![id]));
+}
+
+/// Save: writes the open photo's edits into the photo file, keeping the untouched original in
+/// the hidden `.casapicoriginals` folder beside it (core `save.rs`). The photo reopens with an
+/// empty recipe, since its edits are now in the pixels.
+#[tauri::command(async)]
+fn edit_save(app: State<'_, App>) -> Res<EditState> {
+    let (id, edge) = {
+        let guard = app.session.lock().map_err(err)?;
+        let s = guard.as_ref().ok_or("no photo open")?;
+        let p = app.db.photo(s.photo_id).map_err(err)?.ok_or("photo not found")?;
+        let path = app.db.photo_path(s.photo_id).map_err(err)?.ok_or("photo not found")?;
+        let (folder, name) = folder_and_name(&path)?;
+        save::save(folder, &name, p.orientation, s.ops()).map_err(err)?;
+        app.db.set_recipe(s.photo_id, "").map_err(err)?;
+        photo_file_changed(&app, s.photo_id, folder);
+        (s.photo_id, s.edge)
+    };
+    open_session(&app, id, edge)
+}
+
+/// Revert: puts the original back exactly as it was before the first Save; the saved edits
+/// are dropped.
+#[tauri::command(async)]
+fn edit_revert(app: State<'_, App>) -> Res<EditState> {
+    let (id, edge) = {
+        let guard = app.session.lock().map_err(err)?;
+        let s = guard.as_ref().ok_or("no photo open")?;
+        let path = app.db.photo_path(s.photo_id).map_err(err)?.ok_or("photo not found")?;
+        let (folder, name) = folder_and_name(&path)?;
+        if !save::revert(folder, &name).map_err(err)? {
+            return Err("this photo has no saved edit to revert".into());
+        }
+        app.db.set_recipe(s.photo_id, "").map_err(err)?;
+        photo_file_changed(&app, s.photo_id, folder);
+        (s.photo_id, s.edge)
+    };
+    open_session(&app, id, edge)
 }
 
 // ---------- export ----------
@@ -583,6 +917,10 @@ fn serve(app: &App, path: &str) -> Response<Vec<u8>> {
         (Some("thumb"), Some(id)) => match id.parse::<i64>().ok().and_then(|id| app.db.thumb(id).ok().flatten()) {
             // the page adds ?v=<n> whenever a thumbnail changes, so a long cache is safe
             Some((_, jpeg)) => respond(StatusCode::OK, "image/jpeg", "max-age=31536000", jpeg, &[]),
+            None => not_found(),
+        },
+        (Some("fx"), _) => match app.fx.lock().ok().and_then(|p| p.clone()) {
+            Some(jpeg) => respond(StatusCode::OK, "image/jpeg", "no-store", jpeg.as_ref().clone(), &[]),
             None => not_found(),
         },
         (Some("preview"), _) => match app.preview.lock().ok().and_then(|p| p.as_ref().map(|p| p.jpeg.clone())) {
@@ -721,6 +1059,7 @@ pub fn run() {
         jobs: Mutex::new(tx),
         session: Mutex::new(None),
         preview: Mutex::new(None),
+        fx: Mutex::new(None),
         version: AtomicU64::new(0),
         watcher: Mutex::new(None),
         prepared: Mutex::new(std::collections::VecDeque::new()),
@@ -752,6 +1091,16 @@ pub fn run() {
             edit_prepare,
             edit_apply,
             edit_fill_preview,
+            edit_try,
+            edit_add,
+            edit_sample,
+            edit_magic,
+            edit_fx_sheet,
+            edit_save,
+            edit_revert,
+            copy_effects,
+            paste_effects,
+            batch_edit,
             edit_undo,
             default_export_dir,
             export_photos,

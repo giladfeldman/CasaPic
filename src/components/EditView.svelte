@@ -1,12 +1,16 @@
 <script lang="ts">
-  // Edit view: one photo, the Basic Fixes panel, Undo/Redo that name the action, a filmstrip
-  // of the folder. Every fix is rendered by the Rust core and saved to the sidecar at once.
+  // Edit view: one photo, Picasa's three editing tabs (Basic Fixes, Tuning, Effects), Undo/Redo
+  // that name the action, a filmstrip of the folder. Every fix is rendered by the Rust core and
+  // saved to the sidecar at once; sliders preview live without saving.
   import { store } from "../lib/store.svelte";
-  import { api, fetchPreview, thumbUrl, type EditState, type Fix, type Photo } from "../lib/api";
+  import { api, fetchPreview, fxUrl, thumbUrl, type EditState, type Fix, type Photo } from "../lib/api";
+  import { EFFECTS, NO_TUNE, defaults, parseTune, toHex, tuneText, type Effect, type Tune, type Values } from "../lib/effects";
 
   type Mode = "fixes" | "crop" | "straighten";
+  type Tab = "basic" | "tune" | "fx";
 
   let mode = $state<Mode>("fixes");
+  let tab = $state<Tab>("basic");
   let st = $state<EditState | null>(null);
   let photo = $state<Photo | null>(null);
   let error = $state<string | null>(null);
@@ -30,6 +34,11 @@
     mode = "fixes";
     crop = null;
     angle = 0;
+    fxOpen = null;
+    pick = null;
+    tune = { ...NO_TUNE };
+    tuneSaved = false;
+    fxV = 0;
     const edge = Math.min(4096, Math.max(512, Math.ceil((Math.max(frameW, frameH) * devicePixelRatio) / 256) * 256));
     api.photo(target).then((p) => t === ticket && (photo = p));
     run(() => api.editOpen(target, edge), t).then(() => {
@@ -54,9 +63,11 @@
       if (t !== ticket) return;
       const t1 = performance.now();
       await draw(s);
+      if (tab === "fx") refreshFx();
       if (store.timing) api.mark(`edit-front call=${(t1 - t0).toFixed(1)} fetch=${fetchMs.toFixed(1)} put=${(performance.now() - t1 - fetchMs).toFixed(1)}`);
       st = s;
       fill = s.fill;
+      syncTune(s);
       store.drawn = s.id;
     } catch (e) {
       if (t === ticket) error = String(e);
@@ -128,6 +139,131 @@
   async function fillCommit(v: number) {
     while (fillBusy) await new Promise((r) => setTimeout(r, 10));
     apply("fill", [v]);
+  }
+
+  function undo(redo: boolean) {
+    fxOpen = null;
+    run(() => api.undo(redo));
+  }
+
+  // ---- live previews (Tuning sliders, effect panels) ----
+  // At most one preview call in flight; the newest request wins. `quick` previews slow effects
+  // at half size while a slider moves; the full one ("Refining…") follows on release.
+  let refining = $state(false);
+  let tryPending: { text: string; replace: boolean; quick: boolean } | null = null;
+  let tryBusy = false;
+  async function preview(text: string, replace: boolean, quick: boolean) {
+    tryPending = { text, replace, quick };
+    if (tryBusy) return;
+    tryBusy = true;
+    while (tryPending) {
+      const r = tryPending;
+      tryPending = null;
+      try {
+        const s = await api.editTry(r.text, r.replace, r.quick);
+        refining = s.quick;
+        await draw(s);
+        if (!s.quick) refining = false;
+      } catch (e) {
+        error = String(e);
+      }
+    }
+    tryBusy = false;
+  }
+  async function settled() {
+    while (tryBusy) await new Promise((r) => setTimeout(r, 10));
+  }
+
+  // ---- Tuning tab ----
+  let tune = $state<Tune>({ ...NO_TUNE });
+  /** whether this visit's Tuning entry is already in the recipe (then it is replaced) */
+  let tuneSaved = $state(false);
+  let pick = $state<null | "neutral" | "point">(null);
+
+  // the sliders show the recipe's last fix when it is Tuning (moving them then adjusts that
+  // entry, as in Picasa); otherwise they start from zero and add a new one
+  function syncTune(s: EditState) {
+    const t = parseTune(s.last);
+    tune = t ?? { ...NO_TUNE };
+    tuneSaved = t != null;
+  }
+  const tuneMoving = () => preview(tuneText(tune), tuneSaved, false);
+  async function tuneCommit() {
+    await settled();
+    const same = JSON.stringify(tune) === JSON.stringify(NO_TUNE);
+    if (same && !tuneSaved) return;
+    await run(() => api.editAdd(tuneText(tune), tuneSaved));
+    tuneSaved = true;
+  }
+  async function magic(kind: "light" | "color") {
+    const skip = tuneSaved ? 1 : 0;
+    const v = await api.editMagic(kind, skip);
+    if (kind === "light") tune = { ...tune, highlights: +v[0].toFixed(4), shadows: +v[1].toFixed(4) };
+    else tune = { ...tune, neutral: toHex(v) };
+    await tuneCommit();
+  }
+  function leaveTab(next: Tab) {
+    if (fxOpen) fxCancel();
+    pick = null;
+    if (st) syncTune(st);
+    tab = next;
+    if (next === "fx") refreshFx();
+  }
+
+  // ---- Effects tab ----
+  let fxOpen = $state<Effect | null>(null);
+  let fxVals = $state<Values>({});
+  let fxV = $state(0);
+  const FX_TILE = 72;
+  async function refreshFx() {
+    if (store.view !== "edit") return;
+    try {
+      fxV = await api.fxSheet(EFFECTS.map((e) => e.text(defaults(e))), Math.round(FX_TILE * devicePixelRatio));
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  function fxClick(e: Effect) {
+    if (e.oneClick) {
+      run(() => api.editAdd(e.text(defaults(e))));
+      return;
+    }
+    fxOpen = e;
+    fxVals = defaults(e);
+    pick = e.point ? "point" : null;
+    preview(e.text(fxVals), false, false);
+  }
+  const fxMoving = (quick: boolean) => fxOpen && preview(fxOpen.text(fxVals), false, quick);
+  async function fxApply() {
+    if (!fxOpen) return;
+    const text = fxOpen.text(fxVals);
+    fxOpen = null;
+    pick = null;
+    await settled();
+    await run(() => api.editAdd(text));
+  }
+  async function fxCancel() {
+    fxOpen = null;
+    pick = null;
+    refining = false;
+    await settled();
+    // redraw the photo as its recipe stands (nothing was saved while the panel was open)
+    await run(() => api.editTry("", false, false));
+  }
+
+  // clicking the photo: neutral colour, or an effect's centre
+  async function pickAt(e: PointerEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    if (pick === "neutral") {
+      const c = await api.editSample(x, y, tuneSaved ? 1 : 0);
+      tune = { ...tune, neutral: toHex(c) };
+      pick = null;
+      await tuneCommit();
+    } else if (pick === "point" && fxOpen) {
+      fxVals = { ...fxVals, x: +x.toFixed(4), y: +y.toFixed(4) };
+      fxMoving(false);
+    }
   }
 
   // ---- crop ----
@@ -211,8 +347,23 @@
   // the tray's rotate buttons must go through this session, or its next save would undo them
   $effect(() => {
     store.editRotate = (turns: number) => apply("rotate", [turns]);
-    return () => (store.editRotate = null);
+    store.editAdd = (text: string) => run(() => api.editAdd(text));
+    return () => {
+      store.editRotate = null;
+      store.editAdd = null;
+    };
   });
+
+  // ---- Save / Revert ----
+  async function save() {
+    if (!st?.edits.length) return;
+    leaveTab(tab);
+    await run(() => api.editSave());
+  }
+  async function revertSaved() {
+    leaveTab(tab);
+    await run(() => api.editRevert());
+  }
 
   // ---- navigation and keys ----
   function go(step: number) {
@@ -237,9 +388,12 @@
     else if (k === "arrowleft" || k === "pageup") go(-1);
     else if (k === "home" && folder) store.select(folder.photos[0][0]);
     else if (k === "end" && folder) store.select(folder.photos[folder.photos.length - 1][0]);
-    else if (e.ctrlKey && k === "z" && st?.undo) run(() => api.undo(false));
-    else if (e.ctrlKey && k === "y" && st?.redo) run(() => api.undo(true));
+    else if (e.ctrlKey && k === "z" && st?.undo) undo(false);
+    else if (e.ctrlKey && k === "y" && st?.redo) undo(true);
     else if (e.ctrlKey && k === "r") apply("rotate", [e.shiftKey ? -1 : 1]);
+    else if (e.ctrlKey && e.shiftKey && k === "c" && id != null) store.copyEffects(id);
+    else if (e.ctrlKey && e.shiftKey && k === "v") store.pasteEffects();
+    else if (e.ctrlKey && !e.shiftKey && k === "s") save();
     else if (e.ctrlKey && e.shiftKey && k === "e") apply("lucky");
     else if (e.ctrlKey && e.shiftKey && k === "s") store.exportFor = store.picked();
     else if (e.ctrlKey && k === "enter" && id != null) api.locate(id);
@@ -268,26 +422,89 @@
   <div class="body">
     <aside class="panel">
       {#if mode === "fixes"}
-        <div class="tabs"><span class="tab on" title="Basic Fixes">🔧 Basic Fixes</span></div>
-        <div class="fixes">
-          <button class="fix" onclick={() => (mode = "crop")}><span class="i">⛶</span>Crop</button>
-          <button class="fix" onclick={() => (mode = "straighten")}><span class="i">⟋</span>Straighten</button>
-          <span></span>
-          <button class="fix" onclick={() => apply("lucky")} title="Ctrl+Shift+E"><span class="i">✦</span>I'm Feeling Lucky</button>
-          <button class="fix" onclick={() => apply("autocontrast")}><span class="i">◐</span>Auto Contrast</button>
-          <button class="fix" onclick={() => apply("autocolor")}><span class="i">◑</span>Auto Color</button>
+        <div class="tabs">
+          <button class="tab" class:on={tab === "basic"} onclick={() => tab !== "basic" && leaveTab("basic")} title="Basic Fixes">🔧 Basic</button>
+          <button class="tab" class:on={tab === "tune"} onclick={() => tab !== "tune" && leaveTab("tune")} title="Tuning">☀ Tuning</button>
+          <button class="tab" class:on={tab === "fx"} onclick={() => tab !== "fx" && leaveTab("fx")} title="Effects">🖌 Effects</button>
         </div>
-        <label class="fill">
-          <span>Fill Light</span>
-          <input type="range" min="0" max="1" step="0.01" value={fill}
-            oninput={(e) => fillInput(+e.currentTarget.value)}
-            onchange={(e) => fillCommit(+e.currentTarget.value)} />
-        </label>
-        <div class="undo">
-          <button disabled={!st?.undo || busy} onclick={() => run(() => api.undo(false))} title="Ctrl+Z">{st?.undo ? `Undo ${st.undo}` : "Undo"}</button>
-          <button disabled={!st?.redo || busy} onclick={() => run(() => api.undo(true))} title="Ctrl+Y">{st?.redo ? `Redo ${st.redo}` : "Redo"}</button>
-        </div>
-        <button class="revert" disabled={!st?.edits.length || busy} onclick={() => apply("revert")}>Undo All Edits</button>
+        {#if tab === "basic"}
+          <div class="fixes">
+            <button class="fix" onclick={() => (mode = "crop")}><span class="i">⛶</span>Crop</button>
+            <button class="fix" onclick={() => (mode = "straighten")}><span class="i">⟋</span>Straighten</button>
+            <span></span>
+            <button class="fix" onclick={() => apply("lucky")} title="Ctrl+Shift+E"><span class="i">✦</span>I'm Feeling Lucky</button>
+            <button class="fix" onclick={() => apply("autocontrast")}><span class="i">◐</span>Auto Contrast</button>
+            <button class="fix" onclick={() => apply("autocolor")}><span class="i">◑</span>Auto Color</button>
+          </div>
+          <label class="fill">
+            <span>Fill Light</span>
+            <input type="range" min="0" max="1" step="0.01" value={fill}
+              oninput={(e) => fillInput(+e.currentTarget.value)}
+              onchange={(e) => fillCommit(+e.currentTarget.value)} />
+          </label>
+        {:else if tab === "tune"}
+          <div class="tune">
+            <label class="slider"><span>Fill Light</span>
+              <input type="range" min="0" max="1" step="0.01" bind:value={tune.fill} oninput={tuneMoving} onchange={tuneCommit} /></label>
+            <button class="magic" onclick={() => magic("light")} title="Set Highlights and Shadows automatically">✦ Lighting</button>
+            <label class="slider"><span>Highlights</span>
+              <input type="range" min="0" max="0.5" step="0.005" bind:value={tune.highlights} oninput={tuneMoving} onchange={tuneCommit} /></label>
+            <label class="slider"><span>Shadows</span>
+              <input type="range" min="0" max="0.5" step="0.005" bind:value={tune.shadows} oninput={tuneMoving} onchange={tuneCommit} /></label>
+            <label class="slider"><span>Color Temperature</span>
+              <input type="range" min="-1" max="1" step="0.01" bind:value={tune.temp} oninput={tuneMoving} onchange={tuneCommit} /></label>
+            <div class="neutral">
+              <button class:armed={pick === "neutral"} onclick={() => (pick = pick === "neutral" ? null : "neutral")}
+                title="Click a spot in the photo that should be white or grey">⌖ Neutral Color Picker</button>
+              <button class="magic" onclick={() => magic("color")} title="Find the neutral colour automatically">✦ Color</button>
+              {#if tune.neutral}<span class="swatch" style:background={tune.neutral} title={tune.neutral}></span>{/if}
+            </div>
+            {#if pick === "neutral"}<p class="hint">Click a part of the photo that should be white or grey.</p>{/if}
+          </div>
+        {:else if fxOpen}
+          <h3>{fxOpen.label}</h3>
+          {#if fxOpen.point}<p class="hint">{fxOpen.point}</p>{/if}
+          {#each fxOpen.sliders ?? [] as s (s.key)}
+            <label class="slider"><span>{s.label}</span>
+              <input type="range" min={s.min} max={s.max} step={s.step} bind:value={fxVals[s.key]}
+                oninput={() => fxMoving(true)} onchange={() => fxMoving(false)} /></label>
+          {/each}
+          {#if fxOpen.color}
+            <label class="row">{fxOpen.color.label}
+              <input type="color" bind:value={fxVals.color} onchange={() => fxMoving(false)} /></label>
+          {/if}
+          {#if fxOpen.lighten}
+            <label class="row">Lighten <input type="checkbox" checked={!!fxVals.lighten} onchange={(e) => { fxVals = { ...fxVals, lighten: e.currentTarget.checked }; fxMoving(false); }} /></label>
+          {/if}
+          {#if refining}<p class="hint">Refining…</p>{/if}
+          <div class="undo">
+            <button onclick={fxApply}>Apply</button>
+            <button onclick={fxCancel}>Cancel</button>
+          </div>
+        {:else}
+          <div class="fxgrid">
+            {#each EFFECTS as e, i (e.id)}
+              <button class="fx" onclick={() => fxClick(e)}>
+                <span class="thumb" style:background-image={fxV ? `url(${fxUrl(fxV)})` : "none"}
+                  style:background-size="{EFFECTS.length * FX_TILE}px {FX_TILE}px"
+                  style:background-position="{-i * FX_TILE}px 0"></span>
+                {e.label}
+              </button>
+            {/each}
+          </div>
+        {/if}
+        {#if !fxOpen}
+          <div class="undo">
+            <button disabled={!st?.undo || busy} onclick={() => undo(false)} title="Ctrl+Z">{st?.undo ? `Undo ${st.undo}` : "Undo"}</button>
+            <button disabled={!st?.redo || busy} onclick={() => undo(true)} title="Ctrl+Y">{st?.redo ? `Redo ${st.redo}` : "Redo"}</button>
+          </div>
+          <button class="revert" disabled={!st?.edits.length || busy} onclick={() => { leaveTab(tab); apply("revert"); }}>Undo All Edits</button>
+          <div class="undo">
+            <button disabled={!st?.edits.length || busy} onclick={save} title="Ctrl+S: write the edits into the photo file; the original is kept">Save</button>
+            <button disabled={!st?.saved || busy} onclick={revertSaved} title="Put back the original photo as it was before the first Save">Revert</button>
+          </div>
+          {#if st?.saved}<p class="hint">Saved. The original is kept in a hidden .casapicoriginals folder; Revert puts it back.</p>{/if}
+        {/if}
       {:else if mode === "crop"}
         <h3>Crop Photo</h3>
         <label class="row">Aspect
@@ -330,6 +547,12 @@
           style:transform={mode === "straighten" ? `rotate(${angle}deg) scale(${1 / straightenScale})` : ""}
         ></canvas>
         {#if mode === "straighten"}<div class="grid-overlay"></div>{/if}
+        {#if pick && mode === "fixes"}
+          <div class="pickzone" role="presentation" onpointerdown={pickAt}></div>
+          {#if pick === "point" && fxOpen}
+            <div class="marker" style:left="{+fxVals.x * 100}%" style:top="{+fxVals.y * 100}%"></div>
+          {/if}
+        {/if}
         {#if mode === "crop"}
           <div class="cropzone" role="presentation" onpointerdown={cropDown} onpointermove={cropMove} onpointerup={cropUp}>
             {#if crop}
@@ -361,8 +584,22 @@
   .body { flex: 1; display: flex; min-height: 0; }
   .panel { width: 290px; flex: none; background: #f6f5f1; border-right: 1px solid var(--chrome-line); display: flex; flex-direction: column; padding: 0 0 10px; overflow-y: auto; }
   .tabs { display: flex; border-bottom: 1px solid #ccc; background: #e9e6dd; }
-  .tab { padding: 6px 12px; font-weight: 600; }
-  .tab.on { background: #f6f5f1; border-right: 1px solid #ccc; }
+  .tab { padding: 6px 10px; font-weight: 600; background: none; border: none; border-right: 1px solid #ccc; border-radius: 0; }
+  .tab.on { background: #f6f5f1; }
+  .tune { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .slider { display: flex; flex-direction: column; gap: 2px; padding: 2px 10px; }
+  .tune .slider { padding: 2px 0; }
+  .slider input { width: 100%; }
+  .magic { align-self: flex-start; }
+  .neutral { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .armed { outline: 2px solid var(--thumb-sel); }
+  .swatch { width: 20px; height: 20px; border: 1px solid #888; }
+  .fxgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 4px; padding: 10px 6px; }
+  .fx { display: flex; flex-direction: column; align-items: center; gap: 3px; background: none; border: 1px solid transparent; font-weight: 400; padding: 4px 2px; font-size: 12px; }
+  .fx:hover { border-color: #c9c4b4; }
+  .thumb { width: 72px; height: 72px; background-color: #ccc; background-repeat: no-repeat; border: 1px solid #999; box-shadow: 1px 1px 2px #0003; }
+  .pickzone { position: absolute; inset: 0; cursor: crosshair; }
+  .marker { position: absolute; width: 14px; height: 14px; margin: -8px 0 0 -8px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 2px #000; pointer-events: none; }
   .fixes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 4px; padding: 14px 8px 6px; }
   .fix { display: flex; flex-direction: column; align-items: center; gap: 4px; background: none; border: 1px solid transparent; font-weight: 400; padding: 6px 2px; }
   .fix:hover { border-color: #c9c4b4; }

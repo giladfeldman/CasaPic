@@ -75,7 +75,7 @@ impl Img {
     }
 }
 
-fn luma(p: &[f32]) -> f32 {
+pub(crate) fn luma(p: &[f32]) -> f32 {
     WR * p[0] + WG * p[1] + WB * p[2]
 }
 
@@ -100,15 +100,75 @@ pub fn output_size(w: f32, h: f32, ops: &[Op]) -> (f32, f32) {
     (w, h)
 }
 
+/// Renders a recipe on a full-size picture.
 pub fn apply(src: &Img, ops: &[Op]) -> Img {
+    apply_scaled(src, ops, 1.0)
+}
+
+/// Renders a recipe on a picture that has `scale` pixels per pixel of the original photo
+/// (0.25 for a 1000 px preview of a 4000 px photo). Only the effects that work at the scale of
+/// the original's pixels (Sharpen, Glow, Film Grain) use it.
+pub fn apply_scaled(src: &Img, ops: &[Op], scale: f32) -> Img {
     let mut img = src.clone();
     for op in ops {
-        img = apply_one(img, op);
+        img = apply_one_scaled(img, op, scale);
     }
     img
 }
 
 pub fn apply_one(img: Img, op: &Op) -> Img {
+    apply_one_scaled(img, op, 1.0)
+}
+
+pub fn apply_one_scaled(img: Img, op: &Op, scale: f32) -> Img {
+    use crate::effects as fx;
+    let mut img = img;
+    match op {
+        Op::Tune { fill, highlights, shadows, neutral, temp } => {
+            fx::tune(&mut img, *fill, *highlights, *shadows, *neutral, *temp);
+            return img;
+        }
+        Op::Sharpen(a) => return fx::sharpen(&img, *a, scale),
+        Op::Sepia => {
+            fx::sepia(&mut img);
+            return img;
+        }
+        Op::BlackWhite => {
+            fx::black_white(&mut img);
+            return img;
+        }
+        Op::Warmify => {
+            fx::warmify(&mut img);
+            return img;
+        }
+        Op::Grain { amount, lighten } => {
+            fx::grain(&mut img, *amount, *lighten, scale);
+            return img;
+        }
+        Op::Tint { fade, color } => {
+            fx::tint(&mut img, *fade, *color);
+            return img;
+        }
+        Op::Saturation(a) => {
+            fx::saturation(&mut img, *a);
+            return img;
+        }
+        Op::SoftFocus { x, y, size, amount } => return fx::soft_focus(&img, *x, *y, *size, *amount),
+        Op::Glow { intensity, radius } => return fx::glow(&img, *intensity, *radius, scale),
+        Op::FilteredBw(c) => {
+            fx::filtered_bw(&mut img, *c);
+            return img;
+        }
+        Op::FocalBw { x, y, size, sharpness } => {
+            fx::focal_bw(&mut img, *x, *y, *size, *sharpness);
+            return img;
+        }
+        Op::GradTint { x, y, feather, shade, color, turn } => {
+            fx::grad_tint(&mut img, *x, *y, *feather, *shade, *color, *turn);
+            return img;
+        }
+        _ => {}
+    }
     match op {
         Op::Rotate(q) => rotate_quarter(&img, q.rem_euclid(4)),
         Op::Crop { x0, y0, x1, y1 } => crop(&img, *x0, *y0, *x1, *y1),
@@ -133,7 +193,7 @@ pub fn apply_one(img: Img, op: &Op) -> Img {
             fill_light(&mut img, *a);
             img
         }
-        Op::Unknown(_) => img,
+        _ => img,
     }
 }
 
@@ -286,7 +346,7 @@ fn fill_with(c: f32, y: f32, k: f32, g: f32) -> f32 {
     c + (1.0 - y.clamp(0.0, 1.0)) * (k * c0.powf(g) - c0)
 }
 
-fn fill_light(img: &mut Img, a: f32) {
+pub(crate) fn fill_light(img: &mut Img, a: f32) {
     if a <= 0.0 {
         return;
     }

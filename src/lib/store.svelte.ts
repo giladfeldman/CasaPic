@@ -27,6 +27,10 @@ class Store {
   drawn = $state<number | null>(null);
   /** set while the Edit view is open: rotations go through its undo history */
   editRotate: ((turns: number) => unknown) | null = null;
+  /** set while the Edit view is open: pasted effects go through its undo history */
+  editAdd: ((text: string) => unknown) | null = null;
+  /** effects copied with Copy All Effects (recipe text) */
+  effectsClip = $state<string | null>(null);
 
   async reload() {
     const fresh = await api.library();
@@ -86,6 +90,56 @@ class Store {
     const on = !ids.every((id) => this.starred.has(id));
     await api.setStar(ids, on);
     for (const f of this.folders) for (const p of f.photos) if (ids.includes(p[0])) p[1] = on ? 1 : 0;
+  }
+
+  /** shows `text` in the status bar for `ms` milliseconds (0 = until the next message) */
+  private flashTimer: ReturnType<typeof setTimeout> | undefined;
+  flash(text: string, ms = 4000) {
+    clearTimeout(this.flashTimer);
+    this.status = text;
+    this.flashing = ms > 0;
+    if (ms) this.flashTimer = setTimeout(() => { this.flashing = false; if (this.status === text) this.status = ""; }, ms);
+  }
+  private flashing = false;
+  /** status from the background work; an empty one does not cut a confirmation short */
+  backendStatus(text: string) {
+    if (text || !this.flashing) this.status = text;
+  }
+
+  async copyEffects(id = this.picked()[0]) {
+    if (id == null) return;
+    try {
+      const text = await api.copyEffects(id);
+      this.effectsClip = text || null;
+      this.flash(text ? "Effects copied" : "This photo has no effects to copy");
+    } catch (e) {
+      this.message = String(e);
+    }
+  }
+
+  async pasteEffects(ids = this.picked()) {
+    if (!this.effectsClip) return;
+    try {
+      if (this.view === "edit" && this.editAdd) await this.editAdd(this.effectsClip);
+      else if (ids.length) {
+        const n = await api.pasteEffects(ids, this.effectsClip);
+        this.flash(`Effects pasted on ${n} photo${n === 1 ? "" : "s"}`);
+      }
+    } catch (e) {
+      this.message = String(e);
+    }
+  }
+
+  /** Batch Edit: one fix on every selected photo (each photo's own recipe, so one undo step each) */
+  async batch(kind: string, label: string, ids = this.picked()) {
+    if (!ids.length) return;
+    this.flash(`${label} on ${ids.length} photo${ids.length === 1 ? "" : "s"}…`, 0);
+    try {
+      const n = await api.batchEdit(ids, kind);
+      this.flash(`${label}: ${n} photo${n === 1 ? "" : "s"} changed`);
+    } catch (e) {
+      this.message = String(e);
+    }
   }
 
   async rotate(turns: number, ids = this.picked()) {

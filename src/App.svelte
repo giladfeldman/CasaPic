@@ -46,7 +46,7 @@
     const off = [
       listen("library-changed", () => store.reload()),
       listen<number[]>("thumbs-updated", (e) => store.thumbsChanged(e.payload)),
-      listen<string>("status", (e) => (store.status = e.payload)),
+      listen<string>("status", (e) => store.backendStatus(e.payload)),
     ];
     return () => off.forEach((p) => p.then((f) => f()));
   });
@@ -63,6 +63,17 @@
     const ids = store.picked();
     if (ids.length) store.exportFor = ids;
   }
+
+  // Picasa's Picture > Batch Edit choices that need no settings
+  const BATCH: [string, string][] = [
+    ["I'm Feeling Lucky", "lucky"],
+    ["Auto Contrast", "autocontrast"],
+    ["Auto Color", "autocolor"],
+    ["Sharpen", "unsharp2=1,0.6;"],
+    ["Sepia", "sepia=1;"],
+    ["Black and White", "bw=1;"],
+    ["Warmify", "warm=1;"],
+  ];
 
   // Only commands that work are listed (no placeholders).
   const menus: Menu[] = $derived([
@@ -103,6 +114,11 @@
         { label: "Rotate Clockwise", keys: "Ctrl+R", run: () => store.rotate(1), enabled: has() },
         { label: "Rotate Counterclockwise", keys: "Ctrl+Shift+R", run: () => store.rotate(-1), enabled: has() },
         { label: "Star / Unstar", run: () => store.toggleStar(), enabled: has() },
+        "-",
+        { label: "Copy All Effects", keys: "Ctrl+Shift+C", run: () => store.copyEffects(), enabled: store.picked().length === 1 },
+        { label: "Paste All Effects", keys: "Ctrl+Shift+V", run: () => store.pasteEffects(), enabled: has() && !!store.effectsClip },
+        "-",
+        ...BATCH.map(([label, kind]) => ({ label: `Batch Edit: ${label}`, run: () => store.batch(kind, label), enabled: has() })),
       ],
     },
     {
@@ -112,7 +128,7 @@
           label: "About CasaPic",
           run: () =>
             (store.message =
-              "CasaPic 0.1 — a personal photo organizer in the spirit of Picasa 3. Your photos are never changed: stars and edits are kept beside them in a hidden .casapic.ini file."),
+              "CasaPic 0.1 — a personal photo organizer in the spirit of Picasa 3. Stars and edits are kept beside your photos in a hidden .casapic.ini file; a photo file changes only when you Save it, and its untouched original is then kept in a hidden .casapicoriginals folder for Revert."),
         },
       ],
     },
@@ -127,6 +143,8 @@
     else if (ctrl && k === "d") store.clearSelection();
     else if (ctrl && k === "i") store.invertSelection();
     else if (ctrl && k === "r") store.rotate(e.shiftKey ? -1 : 1);
+    else if (ctrl && e.shiftKey && k === "c") store.copyEffects();
+    else if (ctrl && e.shiftKey && k === "v") store.pasteEffects();
     else if (ctrl && e.shiftKey && k === "s") exportPicked();
     else if (ctrl && k === "1") store.setThumbSize(80);
     else if (ctrl && k === "2") store.setThumbSize(140);
