@@ -93,7 +93,9 @@ class Store {
   /** where the grid was in each view (folders, each album, timeline, search): the photo at the
    *  top of the screen and how far below the top edge it sat. Kept by photo, not by pixel, so
    *  the place survives opening a photo, other thumbnail sizes, a resized window and a restart. */
-  gridPlace: Record<string, { id: number; off: number }> = JSON.parse(localStorage.getItem("gridPlace") ?? "{}");
+  gridPlace: Record<string, { id: number; off: number }> = (() => {
+    try { return JSON.parse(localStorage.getItem("gridPlace") ?? "{}"); } catch { return {}; } // damaged saved value: start fresh
+  })();
   saveGridPlace(key: string, place: { id: number; off: number }) {
     this.gridPlace[key] = place;
     clearTimeout(this.placeTimer);

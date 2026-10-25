@@ -75,7 +75,7 @@ The panel on the left has four tabs:
 Every edit can be undone (Ctrl+Z) and redone (Ctrl+Y). **Before / After** shows the photo
 with and without the edits side by side.
 
-**Zoom**: the slider at the bottom right goes from Fit to 400%. Ctrl+mouse wheel zooms too.
+**Zoom**: the slider in the bar under the photo goes from Fit to 400%. Ctrl+mouse wheel zooms too.
 When you are zoomed in, a small overview shows which part you are looking at; click or drag in
 it to move around. The Fit and 100% buttons jump straight to those sizes.
 

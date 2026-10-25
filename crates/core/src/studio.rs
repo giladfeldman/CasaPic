@@ -7,7 +7,7 @@
 //! originals and aligned. The darkening is a circle centred on the picture, sized by the half
 //! diagonal (not stretched to the frame), multiplying the light (linear values) by
 //! exp(inner + (outer − inner)·r^p). Fitted per photo, it brought the median colour difference
-//! to the Snapseed result from 5.5 to 2.1 ΔE (docs: README, "Studio").
+//! to the Snapseed result from 5.5 to 2.1 ΔE.
 //!
 //! Tools that look at neighbouring pixels are laid out in fractions of the picture, so a
 //! preview and the full-size result look alike; Sharpening alone works in pixels of the original
@@ -73,6 +73,7 @@ fn saturate(p: &mut [f32], k: f32) {
 
 /// Tune Image: brightness, contrast, saturation, ambiance, highlights, shadows and warmth,
 /// each −100 to +100 (0 = unchanged).
+#[allow(clippy::too_many_arguments)] // one argument per slider of the Tune Image tool
 pub fn tune_image(img: &mut Img, brightness: f32, contrast: f32, saturation: f32, ambiance: f32, highlights: f32, shadows: f32, warmth: f32) {
     let (b, c, s, a, hi, sh, wa) = [brightness, contrast, saturation, ambiance, highlights, shadows, warmth].map(|v| v.clamp(-100.0, 100.0) / 100.0).into();
     // brightness: a midtone curve (black and white stay put)
@@ -258,5 +259,27 @@ mod tests {
         let mut h = grad.clone();
         hdr_scape(&mut h, 80.0, 0.0, 0.0);
         assert!(h.px.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn every_studio_op_in_a_recipe_changes_the_picture() {
+        // through the recipe text and the renderer, as Save and the Edit view use them: a tool
+        // that parses but is not drawn (or is drawn as another tool) would leave the picture alone
+        // big enough that Structure's surroundings (0.25% of the diagonal) span a pixel or more
+        let (w, h) = (400usize, 300usize);
+        let img = Img { w, h, px: (0..w * h).flat_map(|i| { let (x, y) = (i % w, i / w); let t = if (x / 2 + y / 2) % 2 == 0 { 0.08 } else { -0.08 }; let v = x as f32 / w as f32; [v + t, v * 0.7 + t, v * 0.5 + t] }).collect() };
+        for text in [
+            "cp_tune=1,40,0,0,0,0,0,0;",
+            "cp_details=1,60,0;",
+            "cp_details=1,0,60;",
+            "cp_vignette=1,-60,0,25,0.5,0.5;",
+            "cp_hdr=1,70,0,0;",
+        ] {
+            let ops = crate::recipe::parse(text);
+            assert!(matches!(ops[..], [ref op] if !matches!(op, crate::recipe::Op::Unknown(_))), "{text} did not parse");
+            let out = crate::render::apply(&img, &ops);
+            let moved = out.px.iter().zip(&img.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(moved > 0.01, "{text} left the picture unchanged ({moved})");
+        }
     }
 }
