@@ -53,16 +53,16 @@
 </nav>
 
 <style>
-  .bar { display: flex; height: 24px; background: #fbfaf6; border-bottom: 1px solid var(--chrome-line); padding-left: 4px; }
+  .bar { display: flex; height: 24px; background: var(--surface); border-bottom: 1px solid var(--chrome-line); padding-left: 4px; }
   .top { position: relative; }
   .title { background: none; border: none; border-radius: 0; font-weight: 400; font-size: 13px; height: 24px; padding: 0 9px; }
-  .title:hover:not(:disabled), .title.open { background: #dfe9f1 !important; }
-  .drop { position: absolute; top: 24px; left: 0; z-index: 40; min-width: 250px; background: #fff; border: 1px solid #999; box-shadow: 2px 3px 10px #0003; padding: 3px 0; }
+  .title:hover:not(:disabled), .title.open { background: var(--hilite) !important; }
+  .drop { position: absolute; top: 24px; left: 0; z-index: 40; min-width: 250px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 3px 10px #0003; padding: 3px 0; }
   .item { display: flex; width: 100%; border: none; border-radius: 0; background: none; font-weight: 400; font-size: 13px; padding: 4px 12px 4px 4px; text-align: left; }
   .item:hover:not(:disabled) { background: var(--list-sel) !important; color: #fff; }
   .check { width: 20px; text-align: center; }
   .lbl { flex: 1; }
-  .keys { color: #888; padding-left: 24px; }
+  .keys { color: var(--muted); padding-left: 24px; }
   .item:hover:not(:disabled) .keys { color: #dde; }
-  hr { border: none; border-top: 1px solid #ddd; margin: 3px 0; }
+  hr { border: none; border-top: 1px solid var(--border-soft); margin: 3px 0; }
 </style>

@@ -39,6 +39,8 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => { if (e.key === "Escape" && !running) { e.preventDefault(); onclose(); } }} />
+
 <div class="scrim" role="presentation">
   <div class="dlg" role="dialog" aria-label="Export to Folder">
     <h2>Export to Folder</h2>
@@ -78,17 +80,17 @@
 
 <style>
   .scrim { position: fixed; inset: 0; background: #0004; display: grid; place-items: center; z-index: 50; }
-  .dlg { width: 460px; background: var(--chrome); border: 1px solid #999; box-shadow: 0 6px 24px #0005; padding: 14px 18px; }
+  .dlg { width: 460px; background: var(--chrome); border: 1px solid var(--border); box-shadow: 0 6px 24px #0005; padding: 14px 18px; }
   h2 { margin: 0 0 4px; font-size: 16px; }
-  .n { margin: 0 0 10px; color: #666; }
-  fieldset { border: 1px solid #ccc; margin: 0 0 10px; padding: 6px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
+  .n { margin: 0 0 10px; color: var(--muted); }
+  fieldset { border: 1px solid var(--border-mid); margin: 0 0 10px; padding: 6px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
   legend { font-weight: 600; }
   .loc { display: flex; gap: 8px; align-items: center; }
-  .loc span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #333; }
+  .loc span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .slider { display: flex; gap: 10px; align-items: center; padding-left: 22px; }
   .slider.off { opacity: 0.45; }
   .slider input { flex: 1; }
   .btns { display: flex; justify-content: flex-end; gap: 8px; }
   .btns button { min-width: 80px; height: 28px; }
-  .err { color: #b00; }
+  .err { color: var(--error); }
 </style>

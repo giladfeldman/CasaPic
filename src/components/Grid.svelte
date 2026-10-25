@@ -1,8 +1,9 @@
 <script lang="ts">
   // The library grid: every folder's photos under a folder header, one long scroll.
   // Only the rows on screen exist in the page, so 50,000 photos scroll as fast as 50.
+  import { untrack } from "svelte";
   import { store } from "../lib/store.svelte";
-  import { api, thumbUrl, fmtDay, type Folder } from "../lib/api";
+  import { api, thumbUrl, renderUrl, fmtDay, type Folder } from "../lib/api";
 
   let { onopen }: { onopen: (id: number) => void } = $props();
 
@@ -47,7 +48,43 @@
     node.select();
   }
 
-  const size = $derived(store.thumbSize);
+  // the largest thumbnail: one photo across the grid, and no taller than the grid
+  $effect(() => {
+    store.thumbMax = Math.max(256, Math.floor(Math.min(width - 2 * PAD, height - 40) / 4) * 4);
+  });
+  const size = $derived(Math.min(store.thumbSize, store.thumbMax));
+  /** thumbnails are kept at 256 pixels; larger tiles get a sharp picture (512/1024/2048) */
+  const sharpEdge = $derived.by(() => {
+    const px = size * devicePixelRatio;
+    return px <= 300 ? 0 : px <= 512 ? 512 : px <= 1024 ? 1024 : 2048;
+  });
+  /** swaps in the sharp picture once the photo has stayed on screen a moment (fast
+   *  scrolling asks for nothing) and the picture has arrived */
+  function sharp(node: HTMLImageElement, p: { id: number; v: number; edge: number }) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let want = "";
+    const go = () => {
+      clearTimeout(timer);
+      if (!p.edge) return;
+      const url = renderUrl(p.id, p.edge, p.v);
+      want = url;
+      timer = setTimeout(() => {
+        const im = new Image();
+        im.src = url;
+        im.decode().then(() => { if (want === url) node.src = url; }, () => {});
+      }, 250);
+    };
+    go();
+    return {
+      update(n: { id: number; v: number; edge: number }) {
+        if (n.id === p.id && n.v === p.v && n.edge === p.edge) return;
+        p = n;
+        node.src = thumbUrl(p.id, p.v);
+        go();
+      },
+      destroy() { clearTimeout(timer); want = ""; },
+    };
+  }
   const cols = $derived(Math.max(1, Math.floor((width - 2 * PAD + GAPX) / (size + GAPX))));
   const rowH = $derived(size + GAPY);
 
@@ -86,8 +123,51 @@
     return out;
   });
 
+  // ---- keeping the place (see store.gridPlace) ----
+  /** which view the grid shows; each keeps its own place */
+  const ctx = $derived(store.album ? "a:" + store.album.token : store.hits ? "s" : store.timeline ? "t" : "f");
+  /** the photos have arrived (the first restore waits for them) */
+  const ready = $derived(blocks.length > 0);
+  /** the view whose place is on screen now (scroll events before a restore are not saved) */
+  let shown = "";
+  function anchorNow(): { id: number; off: number } | null {
+    for (const b of blocks) {
+      if (b.top + b.height <= scrollTop) continue;
+      const r = Math.max(0, Math.min(Math.floor((scrollTop - b.top - HEADER) / rowH), Math.ceil(b.folder.photos.length / cols) - 1));
+      const p = b.folder.photos[r * cols];
+      if (p) return { id: p[0], off: b.top + HEADER + r * rowH - scrollTop };
+    }
+    return null;
+  }
+  function yOf(id: number): number | null {
+    const f = store.folderOf.get(id);
+    const b = blocks.find((b) => b.folder === f);
+    if (!b || !f) return null;
+    const i = f.photos.findIndex((p) => p[0] === id);
+    return i < 0 ? null : b.top + HEADER + Math.floor(i / cols) * rowH;
+  }
+  // back to the saved place when the view changes, the grid comes back (after a photo was
+  // open) or the thumbnails change size; then make sure the photo in focus is on screen
+  $effect(() => {
+    void [ctx, cols, size, el, ready];
+    untrack(() => {
+      if (!el || !blocks.length) return;
+      const place = store.gridPlace[ctx];
+      const y = place ? yOf(place.id) : null;
+      if (y != null) el.scrollTop = y - place!.off;
+      else if (shown !== ctx) el.scrollTop = 0;
+      scrollTop = el.scrollTop;
+      if (store.focus != null && store.folderOf.has(store.focus)) scrollIntoView(store.focus);
+      shown = ctx;
+    });
+  });
+
   function onScroll() {
     scrollTop = el!.scrollTop;
+    if (shown === ctx) {
+      const a = anchorNow();
+      if (a) store.saveGridPlace(ctx, a);
+    }
     const b = blocks.find((b) => b.top + b.height > scrollTop + 40);
     if (b) store.activeFolder = b.folder.id;
   }
@@ -237,6 +317,7 @@
           <span class="frame">
             {#if (store.thumbV[c.id] ?? 0) > 0}
               <img src={thumbUrl(c.id, store.thumbV[c.id])} alt="" draggable="false" loading="lazy" decoding="async"
+                use:sharp={{ id: c.id, v: store.thumbV[c.id], edge: sharpEdge }}
                 style:max-width="{size}px" style:max-height="{size}px" />
             {:else}
               <span class="ph" style:width="{size * 0.75}px" style:height="{size * 0.56}px"></span>
@@ -259,16 +340,16 @@
 {/if}
 
 <style>
-  .grid { flex: 1; overflow-y: auto; background: #fff; position: relative; }
+  .grid { flex: 1; overflow-y: auto; background: var(--surface); position: relative; }
   .space { position: relative; }
   .head { position: absolute; left: 20px; right: 20px; height: 84px; display: flex; gap: 10px; align-items: flex-start; padding-top: 8px; }
   .title { font-size: 20px; color: var(--title); line-height: 1.1; }
-  .play.coll { margin-left: 4px; color: #3d6ea8; }
+  .play.coll { margin-left: 4px; color: var(--link); }
   .play { margin-left: 10px; vertical-align: 3px; font-size: 11px; color: #2a8a2a; padding: 1px 7px; border-radius: 3px; }
-  .date { color: #555; margin-top: 3px; }
+  .date { color: var(--text-2); margin-top: 3px; }
   .head > div { flex: 1; min-width: 0; }
-  .desc { display: block; border: none; background: none; padding: 1px 0; margin-top: 3px; font-weight: 400; font-size: 13px; color: #333; text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .desc.empty { color: #9a9a9a; font-style: italic; }
+  .desc { display: block; border: none; background: none; padding: 1px 0; margin-top: 3px; font-weight: 400; font-size: 13px; color: var(--text); text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .desc.empty { color: var(--muted); font-style: italic; }
   .desc:hover { text-decoration: underline; }
   .desc-in { display: block; margin-top: 2px; width: min(560px, 100%); font-size: 13px; padding: 1px 4px; }
   .cell { position: absolute; display: flex; align-items: center; justify-content: center; outline: none; }
@@ -279,8 +360,8 @@
   .hidmark { position: absolute; right: 3px; bottom: 3px; background: #0008; color: #fff; font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 2px; }
   .ph { display: block; background: linear-gradient(135deg, #e9e9e9, #d6d6d6); }
   .star { position: absolute; left: 3px; bottom: 1px; color: #f6c200; font-size: 18px; text-shadow: 0 0 2px #000, 0 0 1px #000; }
-  .ctx { position: fixed; z-index: 45; background: #fff; border: 1px solid #999; box-shadow: 2px 3px 10px #0003; padding: 3px 0; min-width: 260px; }
+  .ctx { position: fixed; z-index: 45; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 3px 10px #0003; padding: 3px 0; min-width: 260px; }
   .ctx button { display: flex; justify-content: space-between; width: 100%; border: none; border-radius: 0; background: none; font-weight: 400; font-size: 13px; padding: 4px 12px; }
   .ctx button:hover { background: var(--list-sel) !important; color: #fff; }
-  .k { color: #888; }
+  .k { color: var(--muted); }
 </style>

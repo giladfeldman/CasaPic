@@ -75,6 +75,29 @@ export const EFFECTS: Effect[] = [
     text: (v) => `dir_tint=1,${n(v.x)},${n(v.y)},${n(v.feather)},${n(v.shade)},${argb(v.color)},0;` },
 ];
 
+// The Studio tab: CasaPic's own tools in the style of the Snapseed app, with Snapseed's slider
+// ranges (crates/core/src/studio.rs renders them). Starting values are CasaPic's choice.
+const sl = (key: string, label: string, min: number, max: number, def: number): Slider => ({ key, label, min, max, step: 1, def });
+export const STUDIO: Effect[] = [
+  { id: "tuneimage", label: "Tune Image",
+    sliders: [
+      sl("brightness", "Brightness", -100, 100, 0), sl("contrast", "Contrast", -100, 100, 0),
+      sl("saturation", "Saturation", -100, 100, 0), sl("ambiance", "Ambiance", -100, 100, 30),
+      sl("highlights", "Highlights", -100, 100, 0), sl("shadows", "Shadows", -100, 100, 0),
+      sl("warmth", "Warmth", -100, 100, 0),
+    ],
+    text: (v) => `cp_tune=1,${n(v.brightness)},${n(v.contrast)},${n(v.saturation)},${n(v.ambiance)},${n(v.highlights)},${n(v.shadows)},${n(v.warmth)};` },
+  { id: "details", label: "Details",
+    sliders: [sl("structure", "Structure", -100, 100, 30), sl("sharpening", "Sharpening", 0, 100, 15)],
+    text: (v) => `cp_details=1,${n(v.structure)},${n(v.sharpening)};` },
+  { id: "vignette", label: "Vignette", point: "Click the photo to move the centre (optional).",
+    sliders: [sl("outer", "Outer Brightness", -100, 100, -50), sl("inner", "Inner Brightness", -100, 100, 0), sl("size", "Centre Size", 0, 100, 25)],
+    text: (v) => `cp_vignette=1,${n(v.outer)},${n(v.inner)},${n(v.size)},${n(v.x)},${n(v.y)};` },
+  { id: "hdr", label: "HDR Scape",
+    sliders: [sl("strength", "Filter Strength", 0, 100, 50), sl("brightness", "Brightness", -100, 100, 0), sl("saturation", "Saturation", -100, 100, 0)],
+    text: (v) => `cp_hdr=1,${n(v.strength)},${n(v.brightness)},${n(v.saturation)};` },
+];
+
 export function defaults(e: Effect): Values {
   const v: Values = { x: 0.5, y: 0.5 };
   for (const s of e.sliders ?? []) v[s.key] = s.def;

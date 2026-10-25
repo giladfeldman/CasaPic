@@ -44,11 +44,11 @@
 </aside>
 
 <style>
-  .props { width: 276px; flex: none; background: #f3f3f3; border-left: 1px solid var(--chrome-line); overflow-y: auto; }
+  .props { width: 276px; flex: none; background: var(--surface-2); border-left: 1px solid var(--chrome-line); overflow-y: auto; }
   header { background: linear-gradient(#9a9a9a, #7c7c7c); color: #fff; font-weight: 600; font-size: 14px; text-align: center; padding: 5px; position: relative; }
   .x { position: absolute; right: 6px; top: 3px; padding: 0 6px; font-size: 11px; }
-  .of { padding: 8px 8px 12px; margin: 0; font-weight: 600; border-bottom: 1px solid #ddd; }
-  .row { display: flex; flex-direction: column; padding: 4px 8px; border-bottom: 1px solid #ddd; }
+  .of { padding: 8px 8px 12px; margin: 0; font-weight: 600; border-bottom: 1px solid var(--border-soft); }
+  .row { display: flex; flex-direction: column; padding: 4px 8px; border-bottom: 1px solid var(--border-soft); }
   .row b { font-size: 12px; }
-  .row span { color: #555; padding-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: text; }
+  .row span { color: var(--text-2); padding-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: text; }
 </style>

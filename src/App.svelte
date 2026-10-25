@@ -22,12 +22,14 @@
   import Slideshow from "./components/Slideshow.svelte";
   import PrintDialog from "./components/PrintDialog.svelte";
   import Collage from "./components/Collage.svelte";
+  import Shortcuts from "./components/Shortcuts.svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import type { FolderSort } from "./lib/store.svelte";
 
   let grid: Grid | undefined = $state();
   let filter: FilterBar | undefined = $state();
   let picasaOpen = $state(false);
+  let shortcutsOpen = $state(false);
   /** the Folder Manager opened by itself on the very first launch (choice 4a) */
   let firstRun = $state(false);
 
@@ -112,7 +114,7 @@
       label: "File",
       items: [
         { label: "Add Folder to CasaPic…", keys: "Ctrl+O", run: addFolder },
-        { label: "New Album…", run: () => store.newAlbum([]) },
+        { label: "New Album…", keys: "Ctrl+N", run: () => store.newAlbum([]) },
         "-",
         { label: "Save a Copy", run: () => store.saveCopy(), enabled: store.picked().length === 1 },
         { label: "Save As…", run: () => store.saveAs(), enabled: store.picked().length === 1 },
@@ -159,7 +161,7 @@
         { label: "Normal Thumbnails", keys: "Ctrl+2", run: () => store.setThumbSize(140) },
         "-",
         { label: "Properties", keys: "Alt+Enter", run: () => store.toggleProperties(), checked: store.showProperties },
-        { label: "Tags", keys: "Ctrl+T", run: () => store.toggleTags(), checked: store.showTags },
+        { label: "Tags", keys: "Ctrl+T", run: () => { store.view = "library"; store.toggleTags(); }, checked: store.showTags },
         { label: "Timeline", keys: "Ctrl+5", run: () => store.toggleTimeline(), checked: store.timeline },
         { label: "Hidden Pictures", run: () => store.toggleShowHidden(), checked: store.showHidden },
         "-",
@@ -189,6 +191,8 @@
         { label: "Paste All Effects", run: () => store.pasteEffects(), enabled: has() && !!store.effectsClip },
         "-",
         ...BATCH.map(([label, kind]) => ({ label: `Batch Edit: ${label}`, run: () => store.batch(kind, label), enabled: has() })),
+        "-",
+        ...(store.options?.looks ?? []).map((l, i) => ({ label: `Apply Look: ${l.name}`, run: () => store.applyLook(i), enabled: has() })),
       ],
     },
     {
@@ -206,6 +210,7 @@
     {
       label: "Help",
       items: [
+        { label: "Keyboard Shortcuts", keys: "F1", run: () => (shortcutsOpen = true) },
         {
           label: "About CasaPic",
           run: () =>
@@ -221,6 +226,8 @@
     const k = e.key.toLowerCase();
     const ctrl = e.ctrlKey;
     if (store.slideshow || store.collageFor || store.printFor) return; // these have their own keys
+    // an open dialog (Options, Folder Manager…) takes the keys; the library waits behind it
+    if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
     if (ctrl && k === "p") {
       e.preventDefault();
       store.print(e.shiftKey);
@@ -236,11 +243,30 @@
       store.toggleFullScreen();
       return;
     }
+    if (k === "f1") {
+      e.preventDefault();
+      shortcutsOpen = true;
+      return;
+    }
+    if (ctrl && k === "n") {
+      e.preventDefault();
+      store.newAlbum([]);
+      return;
+    }
+    if (store.view === "edit" && ctrl && (k === "t" || k === "k")) {
+      // as the Tags menu: back to the Library with the Tags panel open
+      e.preventDefault();
+      store.view = "library";
+      if (!store.showTags) store.toggleTags();
+      return;
+    }
     if (store.view === "edit") return; // the Edit view has its own keys
     if (ctrl && k === "a") store.selectAll();
     else if (ctrl && k === "d") store.clearSelection();
     else if (ctrl && k === "i") store.invertSelection();
-    else if (ctrl && k === "t") store.toggleTags();
+    else if (ctrl && (k === "t" || k === "k")) store.toggleTags();
+    else if (ctrl && e.shiftKey && k === "b") store.batch("bw=1;", "Black and White");
+    else if (ctrl && e.shiftKey && k === "e") store.batch("lucky", "I'm Feeling Lucky");
     else if (ctrl && k === "f") filter?.focus();
     else if (ctrl && k === "5") store.toggleTimeline();
     else if (ctrl && e.shiftKey && k === "h") store.flip(1);
@@ -252,7 +278,7 @@
     else if (ctrl && k === "c") store.cutOrCopy(false);
     else if (ctrl && k === "v") store.paste();
     else if (k === "f2") store.renamePicked();
-    else if (k === "delete") store.deletePicked();
+    else if (k === "delete") store.deletePicked(); // Picasa: Delete, and Ctrl+Delete on the right-click menu
     else if (ctrl && e.shiftKey && k === "s") exportPicked();
     else if (ctrl && !e.shiftKey && k === "o") addFolder();
     else if (ctrl && k === "1") store.setThumbSize(80);
@@ -291,6 +317,7 @@
   {#if store.slideshow}<Slideshow />{/if}
   {#if store.collageFor}<Collage ids={store.collageFor} onclose={() => (store.collageFor = null)} />{/if}
   {#if store.printFor}<PrintDialog ids={store.printFor.ids} contact={store.printFor.contact} onclose={() => (store.printFor = null)} />{/if}
+  {#if shortcutsOpen}<Shortcuts {menus} onclose={() => (shortcutsOpen = false)} />{/if}
   {#if picasaOpen}<PicasaImport onclose={() => (picasaOpen = false)} />{/if}
   {#if store.optionsOpen}<OptionsDialog onclose={() => (store.optionsOpen = false)} />{/if}
   {#if store.dateFor}<DateDialog ids={store.dateFor} onclose={() => (store.dateFor = null)} />{/if}
@@ -313,6 +340,6 @@
   .main { flex: 1; display: flex; min-height: 0; }
   .center { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .scrim { position: fixed; inset: 0; background: #0004; display: grid; place-items: center; z-index: 50; }
-  .msg { background: var(--chrome); border: 1px solid #999; padding: 16px 20px; max-width: 420px; box-shadow: 0 6px 24px #0005; text-align: right; }
+  .msg { background: var(--chrome); border: 1px solid var(--border); padding: 16px 20px; max-width: 420px; box-shadow: 0 6px 24px #0005; text-align: right; }
   .msg p { text-align: left; margin: 0 0 14px; line-height: 1.45; }
 </style>

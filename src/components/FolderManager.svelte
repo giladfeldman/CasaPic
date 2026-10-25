@@ -66,6 +66,8 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => { if (e.key === "Escape" && !busy) { e.preventDefault(); cancel(); } }} />
+
 {#snippet node(n: FmNode, depth: number)}
   {@const r = ruleOf(n.path)}
   {@const mine = own(n.path)}
@@ -133,31 +135,31 @@
 
 <style>
   .scrim { position: fixed; inset: 0; background: #0004; display: grid; place-items: center; z-index: 60; }
-  .dlg { background: #f6f5f1; border: 1px solid #999; box-shadow: 0 8px 30px #0005; width: min(880px, 94vw); height: min(620px, 90vh); display: flex; flex-direction: column; padding: 12px 16px; }
+  .dlg { background: var(--surface); border: 1px solid var(--border); box-shadow: 0 8px 30px #0005; width: min(880px, 94vw); height: min(620px, 90vh); display: flex; flex-direction: column; padding: 12px 16px; }
   h2 { margin: 0 0 6px; font-size: 17px; }
-  .intro { margin: 0 0 8px; color: #444; line-height: 1.4; }
+  .intro { margin: 0 0 8px; color: var(--text); line-height: 1.4; }
   .body { flex: 1; display: flex; gap: 12px; min-height: 0; }
-  .tree { flex: 1.3; overflow: auto; background: #fff; border: 1px solid #bbb; padding: 4px 0; }
+  .tree { flex: 1.3; overflow: auto; background: var(--surface); border: 1px solid var(--border-mid); padding: 4px 0; }
   .node { display: flex; align-items: center; height: 22px; white-space: nowrap; }
   .node.cur { background: var(--list-sel); }
   .node.cur .name { color: #fff; }
-  .arrow { width: 18px; height: 18px; padding: 0; border: none; background: none; font-size: 11px; color: #666; }
+  .arrow { width: 18px; height: 18px; padding: 0; border: none; background: none; font-size: 11px; color: var(--muted); }
   .arrow.hide { visibility: hidden; }
   .name { border: none; background: none; padding: 0 4px; font-weight: 400; display: flex; gap: 6px; align-items: center; }
-  .st { width: 14px; text-align: center; color: #25648b; font-weight: 700; }
+  .st { width: 14px; text-align: center; color: var(--link); font-weight: 700; }
   .st.faint { opacity: 0.45; }
   .side { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  .box { background: #fff; border: 1px solid #bbb; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .box { background: var(--surface); border: 1px solid var(--border-mid); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
   .box:last-child { flex: 1; overflow: auto; }
   .h { font-weight: 600; }
-  .path { color: #555; font-size: 12px; word-break: break-all; }
+  .path { color: var(--text-2); font-size: 12px; word-break: break-all; }
   label { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-  .hint { color: #777; font-size: 12px; width: 100%; padding-left: 22px; margin: 0; }
+  .hint { color: var(--muted); font-size: 12px; width: 100%; padding-left: 22px; margin: 0; }
   .box > .hint { padding-left: 0; }
-  .link { align-self: flex-start; background: none; border: none; color: #25648b; text-decoration: underline; padding: 0; font-weight: 400; }
+  .link { align-self: flex-start; background: none; border: none; color: var(--link); text-decoration: underline; padding: 0; font-weight: 400; }
   .w { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .w.other { color: #777; }
-  .err { color: #b00; }
+  .w.other { color: var(--muted); }
+  .err { color: var(--error); }
   .buttons { display: flex; justify-content: flex-end; gap: 8px; padding-top: 10px; }
   .buttons button { min-width: 80px; }
 </style>

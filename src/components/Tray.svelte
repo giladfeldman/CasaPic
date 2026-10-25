@@ -68,7 +68,7 @@
   {#if store.view === "library"}
     <label class="size" title="Thumbnail size">
       <span>▫</span>
-      <input type="range" min="64" max="256" step="4" value={store.thumbSize} oninput={(e) => store.setThumbSize(+e.currentTarget.value)} />
+      <input type="range" min="64" max={store.thumbMax} step="4" value={Math.min(store.thumbSize, store.thumbMax)} oninput={(e) => store.setThumbSize(+e.currentTarget.value)} />
       <span class="bigger">▢</span>
     </label>
   {/if}
@@ -77,20 +77,20 @@
 <style>
   .status { height: 20px; background: var(--status); color: #fff; font-size: 12px; font-weight: 600; display: flex; gap: 22px; justify-content: center; align-items: center; white-space: nowrap; overflow: hidden; }
   .tray { height: 84px; display: flex; align-items: center; gap: 14px; padding: 6px 12px; background: var(--chrome); border-top: 1px solid #fff; }
-  .sel { width: 520px; height: 72px; display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #ccc; padding: 4px; }
+  .sel { width: 520px; height: 72px; display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border-mid); padding: 4px; }
   .thumbs { flex: 1; display: flex; gap: 4px; overflow: hidden; height: 60px; align-items: center; }
   .thumbs img { height: 56px; box-shadow: 1px 1px 3px #0005; }
-  .lbl { color: #999; white-space: nowrap; }
-  .clear { padding: 1px 6px; color: #c00; }
+  .lbl { color: var(--muted); white-space: nowrap; }
+  .clear { padding: 1px 6px; color: var(--error); }
   .hold { padding: 1px 5px; filter: grayscale(1); opacity: 0.7; }
-  .hold.on { filter: none; opacity: 1; background: #fff3c4; }
+  .hold.on { filter: none; opacity: 1; background: var(--note-bg); }
   .t { position: relative; display: block; line-height: 0; }
   .pin { position: absolute; right: -2px; top: -4px; font-size: 12px; line-height: 1; }
   .tools { display: flex; gap: 6px; align-items: center; }
-  .ico { font-size: 17px; line-height: 1; color: #456; }
+  .ico { font-size: 17px; line-height: 1; color: var(--link); }
   .ico.on { color: #f0b400; }
   .big { height: 40px; padding: 0 18px; }
-  .size { margin-left: auto; display: flex; align-items: center; gap: 6px; color: #678; }
+  .size { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--muted); }
   .size input { width: 140px; }
   .bigger { font-size: 20px; }
 </style>

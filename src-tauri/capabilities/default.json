@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "What the CasaPic window may do: core events, the folder picker, full screen (F11).",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save", "core:window:allow-set-fullscreen", "core:window:allow-is-fullscreen"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save", "core:window:allow-set-fullscreen", "core:window:allow-is-fullscreen", "core:window:allow-set-theme"]
 }

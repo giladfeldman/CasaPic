@@ -26,9 +26,9 @@
 </div>
 
 <style>
-  .menu { position: fixed; z-index: 46; background: #fff; border: 1px solid #999; box-shadow: 2px 3px 10px #0003; padding: 3px 0; min-width: 200px; max-height: 70vh; overflow-y: auto; display: flex; flex-direction: column; }
+  .menu { position: fixed; z-index: 46; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 3px 10px #0003; padding: 3px 0; min-width: 200px; max-height: 70vh; overflow-y: auto; display: flex; flex-direction: column; }
   .menu button { border: none; border-radius: 0; background: none; text-align: left; padding: 4px 14px; font-weight: 400; font-size: 13px; }
   .menu button:hover { background: var(--list-sel) !important; color: #fff; }
-  .sub { color: #888; font-size: 12px; padding: 3px 14px 1px; }
-  hr { border: none; border-top: 1px solid #ddd; margin: 3px 0; }
+  .sub { color: var(--muted); font-size: 12px; padding: 3px 14px 1px; }
+  hr { border: none; border-top: 1px solid var(--border-soft); margin: 3px 0; }
 </style>

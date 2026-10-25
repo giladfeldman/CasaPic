@@ -337,20 +337,20 @@
   .wrap { position: fixed; inset: 0; z-index: 60; display: flex; background: var(--chrome); }
   aside { width: 270px; padding: 12px; display: flex; flex-direction: column; gap: 12px; font-size: 12px; border-right: 1px solid var(--chrome-line); overflow: auto; }
   h3 { margin: 0; font-size: 15px; }
-  h3 span { font-weight: 400; color: #666; font-size: 12px; }
+  h3 span { font-weight: 400; color: var(--muted); font-size: 12px; }
   label, .grp { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
   .row { display: flex; flex-direction: row; align-items: center; gap: 6px; font-weight: 400; }
   .row button { flex: 1; }
-  button.on { background: #cfe0f3; border-color: #6f9fd8; }
+  button.on { background: var(--hilite); border-color: #6f9fd8; }
   select { max-width: 100%; }
   .btns { display: flex; gap: 8px; }
   .btns button { flex: 1; padding: 5px; }
   .primary { font-weight: 600; }
-  .note { color: #666; margin: 0; }
-  .err { color: #b00; margin: 0; }
-  .stage { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #d8d8d8; }
+  .note { color: var(--muted); margin: 0; }
+  .err { color: var(--error); margin: 0; }
+  .stage { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--photo-bg); }
   .canvasbox { flex: 1; display: grid; place-items: center; min-height: 0; position: relative; }
   canvas { box-shadow: 0 2px 10px #0005; }
-  .wait { position: absolute; color: #555; }
+  .wait { position: absolute; color: var(--text-2); }
   .under { display: flex; justify-content: center; gap: 8px; padding: 8px; }
 </style>

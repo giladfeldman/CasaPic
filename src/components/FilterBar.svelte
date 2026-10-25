@@ -31,14 +31,14 @@
 
 <style>
   .bar { height: 34px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 12px; background: var(--chrome); border-bottom: 1px solid var(--chrome-line); }
-  .mode { font-weight: 600; color: #25648b; }
+  .mode { font-weight: 600; color: var(--link); }
   .star { padding: 0 8px; height: 24px; color: #889; font-size: 15px; }
   .star.on { color: #f0b400; background: #fff7d6; }
-  .dates { display: flex; align-items: center; gap: 4px; color: #667; font-size: 12px; }
+  .dates { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
   .dates input { font-size: 12px; padding: 1px 3px; }
-  .count { color: #25648b; font-weight: 600; font-size: 12px; }
-  .search { margin-left: auto; display: flex; align-items: center; background: #fff; border: 1px solid #aab; border-radius: 3px; padding: 0 4px; width: 340px; }
-  .glass { color: #889; font-size: 15px; }
+  .count { color: var(--link); font-weight: 600; font-size: 12px; }
+  .search { margin-left: auto; display: flex; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; width: 340px; }
+  .glass { color: var(--muted); font-size: 15px; }
   .search input { border: none; outline: none; flex: 1; min-width: 0; padding: 3px 4px; font-size: 13px; }
-  .clear { border: none; background: none; color: #a00; padding: 0 4px; font-size: 11px; }
+  .clear { border: none; background: none; color: var(--error); padding: 0 4px; font-size: 11px; }
 </style>

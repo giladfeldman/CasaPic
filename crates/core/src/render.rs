@@ -167,6 +167,19 @@ pub fn apply_one_scaled(img: Img, op: &Op, scale: f32) -> Img {
             fx::grad_tint(&mut img, *x, *y, *feather, *shade, *color, *turn);
             return img;
         }
+        Op::TuneImage { brightness, contrast, saturation, ambiance, highlights, shadows, warmth } => {
+            crate::studio::tune_image(&mut img, *brightness, *contrast, *saturation, *ambiance, *highlights, *shadows, *warmth);
+            return img;
+        }
+        Op::Details { structure, sharpening } => return crate::studio::details(&img, *structure, *sharpening, scale),
+        Op::Vignette { outer, inner, size, x, y } => {
+            crate::studio::vignette(&mut img, *outer, *inner, *size, *x, *y);
+            return img;
+        }
+        Op::HdrScape { strength, brightness, saturation } => {
+            crate::studio::hdr_scape(&mut img, *strength, *brightness, *saturation);
+            return img;
+        }
         _ => {}
     }
     match op {

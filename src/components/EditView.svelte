@@ -2,13 +2,13 @@
   // Edit view: one photo, Picasa's three editing tabs (Basic Fixes, Tuning, Effects), Undo/Redo
   // that name the action, a filmstrip of the folder. Every fix is rendered by the Rust core and
   // saved to the sidecar at once; sliders preview live without saving.
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { store } from "../lib/store.svelte";
   import { api, fetchPreview, fetchView, fxUrl, thumbUrl, type EditState, type Fix, type Photo } from "../lib/api";
-  import { EFFECTS, NO_TUNE, defaults, parseTune, toHex, tuneText, type Effect, type Tune, type Values } from "../lib/effects";
+  import { EFFECTS, STUDIO, NO_TUNE, defaults, parseTune, toHex, tuneText, type Effect, type Tune, type Values } from "../lib/effects";
 
   type Mode = "fixes" | "crop" | "straighten";
-  type Tab = "basic" | "tune" | "fx";
+  type Tab = "basic" | "tune" | "fx" | "studio";
 
   let mode = $state<Mode>("fixes");
   let tab = $state<Tab>("basic");
@@ -84,7 +84,7 @@
       if (t !== ticket) return;
       const t1 = performance.now();
       await draw(s);
-      if (tab === "fx") refreshFx();
+      if (tab === "fx" || tab === "studio") refreshFx();
       if (store.timing) api.mark(`edit-front call=${(t1 - t0).toFixed(1)} fetch=${fetchMs.toFixed(1)} put=${(performance.now() - t1 - fetchMs).toFixed(1)}`);
       st = s;
       fill = s.fill;
@@ -228,7 +228,7 @@
     pick = null;
     if (st) syncTune(st);
     tab = next;
-    if (next === "fx") refreshFx();
+    if (next === "fx" || next === "studio") refreshFx();
   }
 
   // ---- Effects tab ----
@@ -236,10 +236,12 @@
   let fxVals = $state<Values>({});
   let fxV = $state(0);
   const FX_TILE = 72;
+  /** the tools of the open tab: Picasa's effects, or the Studio tools */
+  const fxList = $derived(tab === "studio" ? STUDIO : EFFECTS);
   async function refreshFx() {
     if (store.view !== "edit") return;
     try {
-      fxV = await api.fxSheet(EFFECTS.map((e) => e.text(defaults(e))), Math.round(FX_TILE * devicePixelRatio));
+      fxV = await api.fxSheet(fxList.map((e) => e.text(defaults(e))), Math.round(FX_TILE * devicePixelRatio));
     } catch (e) {
       error = String(e);
     }
@@ -381,12 +383,70 @@
   /** "fit": the whole photo in the frame; "actual": one photo pixel per screen pixel, dragged
    *  to look around (rendered at full size by the core, as Save would) */
   let zoom = $state<"fit" | "actual">("fit");
+  let bigSize = $state({ w: 0, h: 0 });
+  /** zoomed in: how big, 1 = one photo pixel per screen pixel (the 100% button) */
+  let scale = $state(1);
+  const MAX_SCALE = 4;
+  /** the scale at which the whole photo fits the frame (the slider's left end) */
+  const fitScale = $derived(bigSize.w ? Math.min(frameW / bigSize.w, frameH / bigSize.h, 1) : 0.25);
+  /** the slider runs evenly in steps of size (logarithmic), from Fit to 400% */
+  const sliderPos = $derived(zoom === "fit" ? 0 : Math.round((1000 * Math.log(scale / fitScale)) / Math.log(MAX_SCALE / fitScale)));
+  async function slide(pos: number) {
+    if (pos <= 0) return setZoom("fit");
+    const s = fitScale * Math.pow(MAX_SCALE / fitScale, pos / 1000);
+    if (zoom !== "actual") await setZoom("actual", s);
+    else rescale(s);
+  }
+  /** changes the size, keeping the same point of the photo in the middle */
+  async function rescale(s: number) {
+    if (!zoomer) return void (scale = s);
+    const cx = (zoomer.scrollLeft + zoomer.clientWidth / 2) / zoomer.scrollWidth;
+    const cy = (zoomer.scrollTop + zoomer.clientHeight / 2) / zoomer.scrollHeight;
+    scale = Math.max(fitScale, Math.min(MAX_SCALE, s));
+    await tick();
+    zoomer.scrollLeft = cx * zoomer.scrollWidth - zoomer.clientWidth / 2;
+    zoomer.scrollTop = cy * zoomer.scrollHeight - zoomer.clientHeight / 2;
+    viewport();
+  }
+  /** Ctrl + mouse wheel zooms in and out */
+  function wheel(e: WheelEvent) {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    rescale(scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+  }
+  // the overview picture: the whole photo, with the part on screen marked (as in Picasa)
+  let overview: HTMLCanvasElement | undefined = $state();
+  let vp = $state({ x: 0, y: 0, w: 1, h: 1 });
+  function viewport() {
+    if (!zoomer) return;
+    vp = {
+      x: zoomer.scrollLeft / zoomer.scrollWidth, y: zoomer.scrollTop / zoomer.scrollHeight,
+      w: Math.min(1, zoomer.clientWidth / zoomer.scrollWidth), h: Math.min(1, zoomer.clientHeight / zoomer.scrollHeight),
+    };
+  }
+  $effect(() => {
+    void st?.version;
+    if (!overview || !canvas || zoom !== "actual") return;
+    const w = 160, h = Math.round((160 * canvas.height) / Math.max(1, canvas.width));
+    overview.width = w * devicePixelRatio;
+    overview.height = h * devicePixelRatio;
+    overview.style.width = w + "px";
+    overview.style.height = h + "px";
+    overview.getContext("2d")!.drawImage(canvas, 0, 0, overview.width, overview.height);
+  });
+  /** click or drag on the overview: look at that part */
+  function overviewAt(e: PointerEvent) {
+    if (!zoomer || (e.type === "pointermove" && !e.buttons)) return;
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    zoomer.scrollLeft = ((e.clientX - r.left) / r.width) * zoomer.scrollWidth - zoomer.clientWidth / 2;
+    zoomer.scrollTop = ((e.clientY - r.top) / r.height) * zoomer.scrollHeight - zoomer.clientHeight / 2;
+    viewport();
+  }
   /** side by side: the original on the left, the edited photo on the right */
   let compare = $state(false);
   /** the original shown while the "Hold for Original" button is held down */
   let holding = $state(false);
   let bigCanvas: HTMLCanvasElement | undefined = $state();
-  let bigSize = $state({ w: 0, h: 0 });
   let origCanvas: HTMLCanvasElement | undefined = $state();
   let holdCanvas: HTMLCanvasElement | undefined = $state();
   let sideCanvas: HTMLCanvasElement | undefined = $state();
@@ -422,9 +482,10 @@
       viewBusy = false;
     }
   }
-  async function setZoom(z: "fit" | "actual") {
+  async function setZoom(z: "fit" | "actual", s = 1) {
     zoom = z;
     if (z === "fit") return;
+    scale = s;
     compare = false;
     const at = st?.version;
     zoomedAt = at ?? -1;
@@ -441,13 +502,14 @@
         zoomer.scrollLeft = (zoomer.scrollWidth - zoomer.clientWidth) / 2;
         zoomer.scrollTop = (zoomer.scrollHeight - zoomer.clientHeight) / 2;
       }
+      viewport();
     });
   }
   // an edit while zoomed in: show it at full size again
   let zoomedAt = -1;
   $effect(() => {
     const v = st?.version ?? -1;
-    if (zoom === "actual" && v !== zoomedAt && !busy) setZoom("actual");
+    if (zoom === "actual" && v !== zoomedAt && !busy) setZoom("actual", untrack(() => scale));
   });
   async function toggleCompare() {
     compare = !compare;
@@ -509,6 +571,7 @@
 
   function onKey(e: KeyboardEvent) {
     if (store.view !== "edit" || store.slideshow || (e.target as HTMLElement)?.closest("input, select, dialog")) return;
+    if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return; // a dialog takes the keys
     const k = e.key.toLowerCase();
     if (k === "escape") {
       if (mode !== "fixes") { mode = "fixes"; crop = null; angle = 0; }
@@ -526,7 +589,12 @@
     else if (e.ctrlKey && !e.shiftKey && k === "s") save();
     else if (e.ctrlKey && e.shiftKey && k === "e") apply("lucky");
     else if (e.ctrlKey && e.shiftKey && k === "s") store.exportFor = store.picked();
+    else if (e.ctrlKey && e.shiftKey && k === "b") run(() => api.editAdd("bw=1;"));
     else if (e.ctrlKey && k === "enter" && id != null) api.locate(id);
+    else if (k === "delete" && id != null) store.deletePicked([id]);
+    else if (k === "f2" && id != null) store.renamePicked();
+    else if (e.ctrlKey && k === "h") store.toggleHold();
+    else if (e.ctrlKey && e.shiftKey && k === "o") store.openWith("editor");
     else return;
     e.preventDefault();
   }
@@ -556,6 +624,7 @@
           <button class="tab" class:on={tab === "basic"} onclick={() => tab !== "basic" && leaveTab("basic")} title="Basic Fixes">🔧 Basic</button>
           <button class="tab" class:on={tab === "tune"} onclick={() => tab !== "tune" && leaveTab("tune")} title="Tuning">☀ Tuning</button>
           <button class="tab" class:on={tab === "fx"} onclick={() => tab !== "fx" && leaveTab("fx")} title="Effects">🖌 Effects</button>
+          <button class="tab" class:on={tab === "studio"} onclick={() => tab !== "studio" && leaveTab("studio")} title="Studio: tools in the style of the Snapseed app, and your saved Looks">◐ Studio</button>
         </div>
         {#if tab === "basic"}
           <div class="fixes">
@@ -613,15 +682,30 @@
           </div>
         {:else}
           <div class="fxgrid">
-            {#each EFFECTS as e, i (e.id)}
+            {#each fxList as e, i (e.id)}
               <button class="fx" onclick={() => fxClick(e)}>
                 <span class="thumb" style:background-image={fxV ? `url(${fxUrl(fxV)})` : "none"}
-                  style:background-size="{EFFECTS.length * FX_TILE}px {FX_TILE}px"
+                  style:background-size="{fxList.length * FX_TILE}px {FX_TILE}px"
                   style:background-position="{-i * FX_TILE}px 0"></span>
                 {e.label}
               </button>
             {/each}
           </div>
+          {#if tab === "studio"}
+            <div class="looks">
+              <h4>Looks</h4>
+              {#each store.options?.looks ?? [] as look, i (i)}
+                <div class="look">
+                  <button class="apply" title="Put this Look's edits on the photo" onclick={() => run(() => api.editAdd(look.recipe))}>{look.name}</button>
+                  <button class="small" title="Rename" onclick={() => store.renameLook(i)}>✎</button>
+                  <button class="small" title="Delete this Look" onclick={() => store.deleteLook(i)}>✕</button>
+                </div>
+              {/each}
+              <button class="save-look" disabled={!st?.edits.length || id == null} onclick={() => id != null && store.saveLook(id)}
+                title="Keeps this photo's colour and tone edits (not crop, rotate or straighten) under a name">Save these edits as a Look…</button>
+              <p class="hint">A Look can be put on many photos at once: select them in the Library, then Picture ▸ Apply Look.</p>
+            </div>
+          {/if}
         {/if}
         {#if !fxOpen}
           <div class="undo">
@@ -699,8 +783,16 @@
         {/if}
       </div>
       {#if zoom === "actual" && mode === "fixes"}
-        <div class="zoomer" bind:this={zoomer} role="presentation" onpointerdown={panDown} onpointermove={panMove} onpointerup={() => (pan = null)}>
-          <canvas bind:this={bigCanvas} style:width="{bigSize.w}px" style:height="{bigSize.h}px"></canvas>
+        <div class="zoomer" bind:this={zoomer} role="presentation" onpointerdown={panDown} onpointermove={panMove} onpointerup={() => (pan = null)}
+          onscroll={viewport} onwheel={wheel}>
+          <canvas bind:this={bigCanvas} style:width="{bigSize.w * scale}px" style:height="{bigSize.h * scale}px"></canvas>
+        </div>
+        <div class="overview" role="presentation" onpointerdown={overviewAt} onpointermove={overviewAt}>
+          <div class="ovhead">Zoomed to {Math.round(scale * 100)}%</div>
+          <div class="ovpic">
+            <canvas bind:this={overview}></canvas>
+            <div class="ovbox" style:left="{vp.x * 100}%" style:top="{vp.y * 100}%" style:width="{vp.w * 100}%" style:height="{vp.h * 100}%"></div>
+          </div>
         </div>
       {/if}
       {#if compare && mode === "fixes"}
@@ -718,7 +810,9 @@
     {#if mode === "fixes"}
       <div class="viewbar">
         <button class:on={zoom === "fit" && !compare} title="The whole photo in the window" onclick={() => { compare = false; setZoom("fit"); }}>Fit</button>
-        <button class:on={zoom === "actual"} title="Actual size: one photo pixel per screen pixel; drag to look around" onclick={() => setZoom("actual")}>100%</button>
+        <button class:on={zoom === "actual" && Math.abs(scale - 1) < 0.01} title="Actual size: one photo pixel per screen pixel; drag to look around" onclick={() => (zoom === "actual" ? rescale(1) : setZoom("actual"))}>100%</button>
+        <input class="zoomslider" type="range" min="0" max="1000" step="1" value={sliderPos} title="Zoom (Ctrl + mouse wheel)"
+          oninput={(e) => slide(+e.currentTarget.value)} />
         <span class="sep"></span>
         <button class:on={compare} title="The original and the edited photo side by side" onclick={toggleCompare}>Before / After</button>
         <button title="Hold down to see the original" onpointerdown={holdDown} onpointerup={() => (holding = false)} onpointerleave={() => (holding = false)}>Hold for Original</button>
@@ -744,12 +838,12 @@
   .film.cur { border-color: var(--thumb-sel); }
   .film img { max-width: 100%; max-height: 100%; }
   .arrow { border-radius: 50%; width: 30px; height: 30px; padding: 0; }
-  .count { color: #666; width: 80px; text-align: right; }
+  .count { color: var(--muted); width: 80px; text-align: right; }
   .body { flex: 1; display: flex; min-height: 0; }
-  .panel { width: 290px; flex: none; background: #f6f5f1; border-right: 1px solid var(--chrome-line); display: flex; flex-direction: column; padding: 0 0 10px; overflow-y: auto; }
-  .tabs { display: flex; border-bottom: 1px solid #ccc; background: #e9e6dd; }
-  .tab { padding: 6px 10px; font-weight: 600; background: none; border: none; border-right: 1px solid #ccc; border-radius: 0; }
-  .tab.on { background: #f6f5f1; }
+  .panel { width: 290px; flex: none; background: var(--surface); border-right: 1px solid var(--chrome-line); display: flex; flex-direction: column; padding: 0 0 10px; overflow-y: auto; }
+  .tabs { display: flex; border-bottom: 1px solid var(--border-mid); background: var(--surface-2); }
+  .tab { padding: 6px 10px; font-weight: 600; background: none; border: none; border-right: 1px solid var(--border-mid); border-radius: 0; }
+  .tab.on { background: var(--surface); }
   .tune { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
   .slider { display: flex; flex-direction: column; gap: 2px; padding: 2px 10px; }
   .tune .slider { padding: 2px 0; }
@@ -757,17 +851,23 @@
   .magic { align-self: flex-start; }
   .neutral { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .armed { outline: 2px solid var(--thumb-sel); }
-  .swatch { width: 20px; height: 20px; border: 1px solid #888; }
+  .swatch { width: 20px; height: 20px; border: 1px solid var(--border); }
+  .looks { padding: 4px 10px 10px; }
+  .looks h4 { margin: 6px 0; font-size: 13px; }
+  .look { display: flex; gap: 4px; margin-bottom: 4px; }
+  .look .apply { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .look .small { padding: 2px 6px; }
+  .save-look { width: 100%; margin-top: 4px; }
   .fxgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 4px; padding: 10px 6px; }
   .fx { display: flex; flex-direction: column; align-items: center; gap: 3px; background: none; border: 1px solid transparent; font-weight: 400; padding: 4px 2px; font-size: 12px; }
-  .fx:hover { border-color: #c9c4b4; }
-  .thumb { width: 72px; height: 72px; background-color: #ccc; background-repeat: no-repeat; border: 1px solid #999; box-shadow: 1px 1px 2px #0003; }
+  .fx:hover { border-color: var(--border-mid); }
+  .thumb { width: 72px; height: 72px; background-color: var(--border-mid); background-repeat: no-repeat; border: 1px solid var(--border); box-shadow: 1px 1px 2px #0003; }
   .pickzone { position: absolute; inset: 0; cursor: crosshair; }
   .marker { position: absolute; width: 14px; height: 14px; margin: -8px 0 0 -8px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 2px #000; pointer-events: none; }
   .fixes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 4px; padding: 14px 8px 6px; }
   .fix { display: flex; flex-direction: column; align-items: center; gap: 4px; background: none; border: 1px solid transparent; font-weight: 400; padding: 6px 2px; }
-  .fix:hover { border-color: #c9c4b4; }
-  .i { width: 44px; height: 32px; display: grid; place-items: center; font-size: 20px; color: #3d6b8f; background: linear-gradient(#fafafa, #dcdcdc); border: 1px solid #aaa; box-shadow: 1px 1px 2px #0003; }
+  .fix:hover { border-color: var(--border-mid); }
+  .i { width: 44px; height: 32px; display: grid; place-items: center; font-size: 20px; color: var(--link); background: linear-gradient(var(--surface), var(--photo-bg)); border: 1px solid var(--border); box-shadow: 1px 1px 2px #0003; }
   .fill { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 20px; }
   .fill input { width: 100%; }
   .undo { display: flex; gap: 6px; padding: 8px; }
@@ -775,30 +875,35 @@
   .revert { margin: 0 8px; }
   h3 { margin: 12px 10px 6px; font-size: 15px; }
   .row { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; }
-  .hint { color: #555; padding: 0 10px; margin: 6px 0; line-height: 1.4; }
+  .hint { color: var(--text-2); padding: 0 10px; margin: 6px 0; line-height: 1.4; }
   .wide { margin: 4px 10px; }
-  .info { margin: auto 10px 0; background: #fff; border: 1px solid #ddd; padding: 6px 8px; }
+  .info { margin: auto 10px 0; background: var(--surface); border: 1px solid var(--border-soft); padding: 6px 8px; }
   .ih { font-weight: 600; margin-bottom: 4px; }
-  .info canvas { width: 224px; height: 60px; background: #fafafa; border-bottom: 1px solid #ccc; }
-  .cam, .edits { color: #666; font-size: 12px; margin-top: 3px; }
+  .info canvas { width: 224px; height: 60px; background: var(--surface); border-bottom: 1px solid var(--border-mid); }
+  .cam, .edits { color: var(--muted); font-size: 12px; margin-top: 3px; }
   .picside { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .caption { flex: none; background: #d8d8d8; padding: 4px 0 8px; display: flex; justify-content: center; }
-  .caption input { width: min(600px, 80%); text-align: center; font-size: 14px; background: #ffffffcc; border: 1px solid #bbb; padding: 3px 6px; }
-  .caption input::placeholder { color: #777; font-style: italic; }
-  .zoomer { position: absolute; inset: 0; overflow: auto; background: #d8d8d8; cursor: grab; display: grid; place-items: center; }
+  .caption { flex: none; background: var(--photo-bg); padding: 4px 0 8px; display: flex; justify-content: center; }
+  .caption input { width: min(600px, 80%); text-align: center; font-size: 14px; background: var(--surface-glass); border: 1px solid var(--border-mid); padding: 3px 6px; }
+  .caption input::placeholder { color: var(--muted); font-style: italic; }
+  .zoomer { position: absolute; inset: 0; overflow: auto; background: var(--photo-bg); cursor: grab; display: grid; place-items: center; }
   .zoomer:active { cursor: grabbing; }
+  .zoomslider { width: 140px; }
+  .overview { position: absolute; right: 14px; bottom: 14px; background: #000a; padding: 3px 4px 4px; border-radius: 3px; cursor: crosshair; user-select: none; }
+  .ovhead { color: #fff; font-size: 11px; text-align: center; padding-bottom: 3px; }
+  .ovpic { position: relative; line-height: 0; }
+  .ovbox { position: absolute; border: 1.5px solid #fff; box-shadow: 0 0 0 1px #000a; pointer-events: none; }
   .zoomer canvas { display: block; max-width: none; }
-  .compare { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; background: #d8d8d8; }
+  .compare { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; background: var(--photo-bg); }
   .compare figure { margin: 0; display: flex; flex-direction: column; align-items: center; min-width: 0; min-height: 0; }
   .compare canvas, .holdview canvas { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; }
   .compare figcaption { font-size: 12px; color: #444; padding-top: 4px; }
-  .holdview { position: absolute; inset: 0; display: flex; padding: 20px; background: #d8d8d8; }
+  .holdview { position: absolute; inset: 0; display: flex; padding: 20px; background: var(--photo-bg); }
   .holdview .tag { position: absolute; left: 12px; top: 10px; background: #0008; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
-  .viewbar { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 0; background: #d8d8d8; }
+  .viewbar { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 0; background: var(--photo-bg); }
   .viewbar button { font-size: 12px; padding: 2px 10px; }
-  .viewbar button.on { background: #cfe0f3; border-color: #6f9fd8; }
+  .viewbar button.on { background: var(--hilite); border-color: #6f9fd8; }
   .viewbar .sep { width: 12px; }
-  .frame { flex: 1; position: relative; display: grid; place-items: center; background: #d8d8d8; min-width: 0; overflow: hidden; }
+  .frame { flex: 1; position: relative; display: grid; place-items: center; background: var(--photo-bg); min-width: 0; overflow: hidden; }
   .pic { position: relative; overflow: hidden; background: #3c3c3c; box-shadow: 0 0 0 6px #4a4a4a, 0 4px 14px #0006; }
   .pic canvas { display: block; transform-origin: 50% 50%; }
   .grid-overlay { position: absolute; inset: 0; pointer-events: none;
@@ -807,6 +912,6 @@
   .cropzone { position: absolute; inset: 0; cursor: crosshair; }
   .shade { position: absolute; background: #000a; pointer-events: none; }
   .box { position: absolute; outline: 1px dashed #fff; cursor: move; pointer-events: none; }
-  .busy { position: absolute; right: 12px; bottom: 10px; color: #444; font-size: 12px; }
-  .err { position: absolute; left: 12px; bottom: 10px; color: #b00; background: #fff; padding: 4px 8px; }
+  .busy { position: absolute; right: 12px; bottom: 10px; color: var(--text); font-size: 12px; }
+  .err { position: absolute; left: 12px; bottom: 10px; color: var(--error); background: var(--surface); padding: 4px 8px; }
 </style>

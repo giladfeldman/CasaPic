@@ -70,11 +70,11 @@
 
 <style>
   .scrim { position: fixed; inset: 0; background: #0004; display: grid; place-items: center; z-index: 50; }
-  .dlg { background: var(--chrome); border: 1px solid #999; width: 480px; box-shadow: 0 6px 24px #0005; }
+  .dlg { background: var(--chrome); border: 1px solid var(--border); width: 480px; box-shadow: 0 6px 24px #0005; }
   header { background: linear-gradient(#9a9a9a, #7c7c7c); color: #fff; font-weight: 600; padding: 5px 10px; }
   .body { padding: 10px 16px; font-size: 13px; }
   ul { margin: 4px 0 8px; padding-left: 20px; }
-  .note { color: #555; font-size: 12px; }
-  .err { color: #b00; }
+  .note { color: var(--text-2); font-size: 12px; }
+  .err { color: var(--error); }
   .btns { display: flex; justify-content: flex-end; gap: 8px; padding: 0 16px 12px; }
 </style>

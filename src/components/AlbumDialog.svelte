@@ -62,12 +62,12 @@
 
 <style>
   .scrim { position: fixed; inset: 0; background: #0004; display: grid; place-items: center; z-index: 50; }
-  .dlg { background: var(--chrome); border: 1px solid #999; width: 420px; box-shadow: 0 6px 24px #0005; }
+  .dlg { background: var(--chrome); border: 1px solid var(--border); width: 420px; box-shadow: 0 6px 24px #0005; }
   header { background: linear-gradient(#9a9a9a, #7c7c7c); color: #fff; font-weight: 600; padding: 5px 10px; }
   form { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
   label { display: flex; flex-direction: column; gap: 3px; font-weight: 600; font-size: 12px; }
   input, textarea { font-weight: 400; font-size: 13px; padding: 3px 5px; }
   textarea { resize: vertical; font-family: inherit; }
-  .err { color: #b00; margin: 0; }
+  .err { color: var(--error); margin: 0; }
   .btns { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

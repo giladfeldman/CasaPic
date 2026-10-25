@@ -38,7 +38,21 @@ pub struct Options {
     pub slide_seconds: f32,
     /// slideshow: "fade" or "none"
     pub slide_transition: String,
+    /// colours: "system" (follow Windows), "light" or "dark"
+    pub theme: String,
+    /// saved Looks: named sets of edits that can be put on any photo or on many at once
+    pub looks: Vec<Look>,
 }
+
+/// A saved Look: its name and the edits, as recipe text (colour and tone edits only).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Look {
+    pub name: String,
+    pub recipe: String,
+}
+
+/// The Look measured from 111 Snapseed edits (a vignette; see studio.rs), offered from the start.
+pub const MY_SNAPSEED_LOOK: &str = "cp_vignette=1,-64.4,14,20.8,0.5,0.5;";
 
 impl Default for Options {
     fn default() -> Self {
@@ -48,6 +62,8 @@ impl Default for Options {
             file_types: crate::scan::IMAGE_EXTS.iter().map(|s| s.to_string()).collect(),
             slide_seconds: 3.0,
             slide_transition: "fade".into(),
+            theme: "system".into(),
+            looks: vec![Look { name: "My Snapseed look".into(), recipe: MY_SNAPSEED_LOOK.into() }],
         }
     }
 }
@@ -204,5 +220,9 @@ mod tests {
         assert_eq!(s.folders[0].scan, Scan::Once);
         assert!(s.options.confirm_delete);
         assert!(s.options.file_types.contains(&"jpg".to_string()));
+        assert_eq!(s.options.theme, "system");
+        // settings from before Looks existed still get the measured Snapseed look
+        assert_eq!(s.options.looks[0].name, "My Snapseed look");
+        assert!(matches!(crate::recipe::parse(&s.options.looks[0].recipe)[..], [crate::recipe::Op::Vignette { .. }]));
     }
 }

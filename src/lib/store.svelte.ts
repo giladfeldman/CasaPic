@@ -1,4 +1,5 @@
 // Window-wide state shared by the views (Svelte 5 runes).
+import { applyTheme } from "./theme";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, type Album, type AlbumRow, type Folder, type Options, type PhotoRow } from "./api";
@@ -89,6 +90,19 @@ class Store {
   folderOf = $derived(new Map(this.folders.flatMap((f) => f.photos.map((p) => [p[0], f] as const))));
   starred = $derived(new Set(this.folders.flatMap((f) => f.photos.filter((p) => p[1]).map((p) => p[0]))));
 
+  /** where the grid was in each view (folders, each album, timeline, search): the photo at the
+   *  top of the screen and how far below the top edge it sat. Kept by photo, not by pixel, so
+   *  the place survives opening a photo, other thumbnail sizes, a resized window and a restart. */
+  gridPlace: Record<string, { id: number; off: number }> = JSON.parse(localStorage.getItem("gridPlace") ?? "{}");
+  saveGridPlace(key: string, place: { id: number; off: number }) {
+    this.gridPlace[key] = place;
+    clearTimeout(this.placeTimer);
+    this.placeTimer = setTimeout(() => localStorage.setItem("gridPlace", JSON.stringify(this.gridPlace)), 400);
+  }
+  private placeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** the folder list's scroll position, kept while a photo is open */
+  folderListScroll = 0;
+
   selection = $state<Set<number>>(new Set());
   /** the photo last clicked; anchor for Shift-click and the arrow keys */
   focus = $state<number | null>(null);
@@ -97,6 +111,8 @@ class Store {
 
   view = $state<"library" | "edit">("library");
   thumbSize = $state(Number(localStorage.getItem("thumbSize") ?? 140));
+  /** the largest thumbnail that fits (one photo per row); set by the grid from its size */
+  thumbMax = $state(256);
   showProperties = $state(localStorage.getItem("showProperties") === "1");
   activeFolder = $state<number | null>(null);
   status = $state("");
@@ -288,6 +304,57 @@ class Store {
     }
   }
 
+  // ---- Looks (saved sets of edits; kept in Options) ----
+  private async setLooks(looks: { name: string; recipe: string }[]) {
+    if (!this.options) return;
+    const o = { ...this.options, looks };
+    await api.optionsSave(o);
+    this.options = o;
+  }
+  /** Save these edits as a Look: the photo's colour and tone edits, under a name */
+  async saveLook(id: number) {
+    const recipe = await api.copyEffects(id);
+    if (!recipe) {
+      this.message = "This photo has no colour or tone edits to keep (crop, rotate and straighten are not part of a Look).";
+      return;
+    }
+    this.prompt = {
+      title: "Save as a Look", label: "Name", value: "My look", ok: "Save",
+      run: async (name) => this.setLooks([...(this.options?.looks ?? []), { name: name.trim(), recipe }]),
+    };
+  }
+  renameLook(i: number) {
+    const look = this.options?.looks[i];
+    if (!look) return;
+    this.prompt = {
+      title: "Rename Look", label: "Name", value: look.name, ok: "Rename",
+      run: async (name) => this.setLooks(this.options!.looks.map((l, k) => (k === i ? { ...l, name: name.trim() } : l))),
+    };
+  }
+  deleteLook(i: number) {
+    const look = this.options?.looks[i];
+    if (!look) return;
+    this.confirm = {
+      title: "Delete Look", text: `Delete the Look "${look.name}"? Photos that already have it keep their edits.`, ok: "Delete",
+      run: async () => this.setLooks(this.options!.looks.filter((_, k) => k !== i)),
+    };
+  }
+  /** Apply Look: on the open photo, or on every selected photo (one undo step each) */
+  async applyLook(i: number, ids = this.picked()) {
+    const look = this.options?.looks[i];
+    if (!look) return;
+    try {
+      if (this.view === "edit" && this.editAdd) await this.editAdd(look.recipe);
+      else if (ids.length) {
+        this.flash(`${look.name} on ${this.plural(ids.length)}…`, 0);
+        const n = await api.pasteEffects(ids, look.recipe);
+        this.flash(`${look.name}: ${this.plural(n)} changed`);
+      }
+    } catch (e) {
+      this.message = String(e);
+    }
+  }
+
   /** Batch Edit: one fix on every selected photo (each photo's own recipe, so one undo step each) */
   async batch(kind: string, label: string, ids = this.picked()) {
     if (!ids.length) return;
@@ -441,7 +508,10 @@ class Store {
   /** a question with a text box (Rename, New Folder…); `run` gets the text on OK */
   prompt = $state<{ title: string; label: string; value: string; ok: string; run: (text: string) => Promise<unknown> } | null>(null);
   /** a yes/no question (Delete…) */
-  confirm = $state<{ title: string; text: string; ok: string; run: () => Promise<unknown> } | null>(null);
+  /** a yes/no question; `skip` adds a "Don't ask again" choice that calls it with the answer */
+  confirm = $state<{ title: string; text: string; ok: string; run: () => Promise<unknown>; skip?: (scope: "session" | "always") => Promise<void> } | null>(null);
+  /** Delete without asking until CasaPic is closed (the Delete question's "for now") */
+  deleteNoAskSession = false;
   /** photos whose date is being adjusted (the Adjust Date and Time dialog is open) */
   dateFor = $state<number[] | null>(null);
   /** photos cut or copied with Ctrl+X / Ctrl+C, waiting for Paste into a folder */
@@ -449,6 +519,7 @@ class Store {
 
   async loadSettings() {
     this.options = (await api.settings()).options;
+    applyTheme(this.options.theme ?? "system");
   }
 
   private async guard(fn: () => Promise<unknown>) {
@@ -478,17 +549,36 @@ class Store {
   /** Delete from Disk: to the Recycle Bin, asking first unless Options say not to */
   async deletePicked(ids = this.picked()) {
     if (!ids.length) return;
+    // in the Edit view, carry on with the next photo of the folder (or the one before)
+    let next: number | null = null;
+    if (this.view === "edit" && this.focus != null) {
+      const list = (this.folderOf.get(this.focus)?.photos ?? []).map((p) => p[0]).filter((id) => !ids.includes(id));
+      const at = (this.folderOf.get(this.focus)?.photos ?? []).findIndex((p) => p[0] === this.focus);
+      next = list[Math.min(Math.max(at, 0), list.length - 1)] ?? null;
+    }
     const go = async () => {
       const n = await api.deletePhotos(ids);
-      if (this.view === "edit") this.view = "library";
+      if (this.view === "edit") {
+        if (next != null) this.select(next);
+        else this.view = "library";
+      }
       this.flash(`${this.plural(n)} moved to the Recycle Bin`);
     };
-    if (this.options?.confirm_delete === false) return this.guard(go);
+    if (this.options?.confirm_delete === false || this.deleteNoAskSession) return this.guard(go);
     const one = ids.length === 1 ? (await api.photo(ids[0])).name : null;
     this.confirm = {
       title: "Delete from Disk",
       text: `${one ? `"${one}"` : this.plural(ids.length)} will be moved to the Windows Recycle Bin, together with any saved original. You can restore ${one ? "it" : "them"} from the Recycle Bin.`,
       ok: "Delete", run: go,
+      skip: async (scope) => {
+        if (scope === "session") this.deleteNoAskSession = true;
+        else if (this.options) {
+          // "always" is the Options setting; it can be switched back on there
+          const o = { ...this.options, confirm_delete: false };
+          await api.optionsSave(o);
+          this.options = o;
+        }
+      },
     };
   }
 

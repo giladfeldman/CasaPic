@@ -32,6 +32,9 @@ export interface Options {
   single_click_exit_edit: boolean;
   file_types: string[];
   slide_seconds: number;
+  theme: "system" | "light" | "dark";
+  /** saved Looks: a name and the edits as recipe text */
+  looks: { name: string; recipe: string }[];
   slide_transition: string;
 }
 export interface Settings { folders: Rule[]; folders_confirmed: boolean; options: Options }

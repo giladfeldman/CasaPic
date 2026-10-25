@@ -201,16 +201,16 @@
 
 <style>
   .scrim { position: fixed; inset: 0; background: #0004; display: grid; place-items: center; z-index: 50; }
-  .dlg { background: var(--chrome); border: 1px solid #999; width: min(980px, 94vw); height: min(720px, 90vh); box-shadow: 0 6px 24px #0005; display: flex; flex-direction: column; }
+  .dlg { background: var(--chrome); border: 1px solid var(--border); width: min(980px, 94vw); height: min(720px, 90vh); box-shadow: 0 6px 24px #0005; display: flex; flex-direction: column; }
   header { background: linear-gradient(#9a9a9a, #7c7c7c); color: #fff; font-weight: 600; padding: 5px 10px; }
   .body { flex: 1; display: flex; min-height: 0; }
   .side { width: 230px; padding: 12px; display: flex; flex-direction: column; gap: 10px; font-size: 12px; border-right: 1px solid var(--chrome-line); }
   .side label { display: flex; flex-direction: column; gap: 3px; font-weight: 600; }
   .side label.row { flex-direction: row; align-items: center; gap: 6px; font-weight: 400; }
   .side input[type="number"] { width: 70px; }
-  .note { color: #555; font-weight: 400; }
-  .previews { flex: 1; overflow: auto; padding: 16px; display: flex; flex-wrap: wrap; gap: 16px; align-content: flex-start; background: #c8c8c8; }
-  .page { position: relative; background: #fff; box-shadow: 0 2px 6px #0004; flex: none; overflow: hidden; }
+  .note { color: var(--text-2); font-weight: 400; }
+  .previews { flex: 1; overflow: auto; padding: 16px; display: flex; flex-wrap: wrap; gap: 16px; align-content: flex-start; background: var(--photo-bg-2); }
+  .page { position: relative; background: var(--surface); box-shadow: 0 2px 6px #0004; flex: none; overflow: hidden; }
   .page img, .ppage img { position: absolute; object-fit: contain; }
   .page img.cover, .ppage img.cover { object-fit: cover; }
   /* contact sheet: each picture sits just above its file name */

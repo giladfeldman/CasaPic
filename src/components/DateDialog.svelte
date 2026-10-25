@@ -48,6 +48,8 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => { if (e.key === "Escape" && !busy) { e.preventDefault(); onclose(); } }} />
+
 <div class="scrim" role="presentation">
   <div class="dlg" role="dialog" aria-label="Adjust Date and Time">
     <h2>Adjust Date and Time</h2>
@@ -72,14 +74,14 @@
 
 <style>
   .scrim { position: fixed; inset: 0; background: #0004; display: grid; place-items: center; z-index: 60; }
-  .dlg { background: var(--chrome); border: 1px solid #999; box-shadow: 0 6px 24px #0005; padding: 14px 18px; width: min(480px, 92vw); }
+  .dlg { background: var(--chrome); border: 1px solid var(--border); box-shadow: 0 6px 24px #0005; padding: 14px 18px; width: min(480px, 92vw); }
   h2 { margin: 0 0 8px; font-size: 16px; }
   p { margin: 0 0 8px; line-height: 1.4; }
   label { display: flex; gap: 10px; align-items: center; }
   input { font-size: 14px; }
   .shift { font-weight: 600; margin-top: 8px; }
-  .hint { color: #666; font-size: 12px; }
-  .err { color: #b00; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .err { color: var(--error); }
   .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
   .buttons button { min-width: 80px; }
 </style>

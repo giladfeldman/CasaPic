@@ -1,7 +1,12 @@
-# Google's Picasa material: private reference only, never committed or shipped.
-research/picasa-reference/
-research/captures/
+# private development material
+dev/
+research/
+communications/
 tmp/
+# private development notes and local tool settings
+TODO.md
+.claude/
+CLAUDE.md
 
 # Build output
 node_modules/
@@ -10,4 +15,20 @@ target/
 src-tauri/gen/schemas/
 *.tsbuildinfo
 
-communications/
+# Editors and the operating system
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs and local secrets
+*.log
+.env
+.env.*
+
+# CasaPic's own data, if a test folder is ever created inside the repository
+.casapic.ini
+.casapicoriginals/
+.picasa.ini

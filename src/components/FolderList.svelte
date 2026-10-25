@@ -117,6 +117,14 @@
     e.preventDefault();
     store.addToAlbum(token, JSON.parse(raw));
   }
+
+  /** the list keeps its scroll position while a photo is open (it is rebuilt on return) */
+  function keepScroll(node: HTMLElement) {
+    node.scrollTop = store.folderListScroll;
+    const save = () => (store.folderListScroll = node.scrollTop);
+    node.addEventListener("scroll", save, { passive: true });
+    return { destroy: () => node.removeEventListener("scroll", save) };
+  }
 </script>
 
 <svelte:window onclick={() => { menu = null; albumMenu = null; }} />
@@ -150,7 +158,7 @@
   {/if}
 {/snippet}
 
-<aside class="list">
+<aside class="list" use:keepScroll>
   <div class="cat">
     <span>▾ Albums ({store.albums.length})</span>
     <span class="views"><button title="New Album" onclick={() => store.newAlbum([])}>＋</button></span>
@@ -235,29 +243,29 @@
 
 <style>
   .list { width: 236px; flex: none; background: var(--list-bg); border-right: 1px solid var(--chrome-line); overflow-y: auto; padding-bottom: 12px; }
-  .cat { background: var(--cat-bg); border-bottom: 1px solid #d8d4ca; font-weight: 600; padding: 3px 8px; position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; align-items: center; }
-  .views button { border: none; background: none; padding: 0 4px; font-size: 13px; color: #888; }
-  .views button.on { color: #25648b; font-weight: 700; }
-  .year { color: var(--muted); border-bottom: 1px solid #ddd; margin: 8px 8px 2px; padding-bottom: 1px; }
-  .row, .tname { display: flex; gap: 6px; align-items: center; width: 100%; height: 22px; border: none; border-radius: 0; background: none; font-weight: 400; font-size: 13px; color: #444; text-align: left; white-space: nowrap; overflow: hidden; }
+  .cat { background: var(--cat-bg); border-bottom: 1px solid var(--border-mid); font-weight: 600; padding: 3px 8px; position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; align-items: center; }
+  .views button { border: none; background: none; padding: 0 4px; font-size: 13px; color: var(--muted); }
+  .views button.on { color: var(--link); font-weight: 700; }
+  .year { color: var(--muted); border-bottom: 1px solid var(--border-soft); margin: 8px 8px 2px; padding-bottom: 1px; }
+  .row, .tname { display: flex; gap: 6px; align-items: center; width: 100%; height: 22px; border: none; border-radius: 0; background: none; font-weight: 400; font-size: 13px; color: var(--text); text-align: left; white-space: nowrap; overflow: hidden; }
   .row { padding: 0; }
   .row:hover:not(.sel), .trow:hover:not(.sel) { background: var(--list-hover) !important; }
   .row.sel, .trow.sel { background: var(--list-sel) !important; }
-  .row.over, .trow.over { outline: 2px solid var(--list-sel); outline-offset: -2px; background: #dbe8f3 !important; }
+  .row.over, .trow.over { outline: 2px solid var(--list-sel); outline-offset: -2px; background: var(--hilite) !important; }
   .row.sel, .trow.sel .tname { color: #fff; }
   .row span, .tname span { overflow: hidden; text-overflow: ellipsis; }
   .trow { display: flex; align-items: center; height: 22px; }
   .tname { padding: 0 4px 0 0; flex: 1; min-width: 0; }
-  .arrow { width: 16px; height: 18px; padding: 0; border: none; background: none; font-size: 10px; color: #777; flex: none; }
+  .arrow { width: 16px; height: 18px; padding: 0; border: none; background: none; font-size: 10px; color: var(--muted); flex: none; }
   .arrow.hide { visibility: hidden; }
   .empty { color: var(--muted); padding: 8px 12px; }
   .hiddenf { font-style: italic; opacity: 0.7; }
   .empty.small { font-size: 12px; padding: 4px 12px 8px; margin: 0; }
   .add { margin: 0 12px; }
-  .menu { position: fixed; z-index: 45; background: #fff; border: 1px solid #999; box-shadow: 2px 3px 10px #0003; padding: 3px 0; min-width: 210px; display: flex; flex-direction: column; }
+  .menu { position: fixed; z-index: 45; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 3px 10px #0003; padding: 3px 0; min-width: 210px; display: flex; flex-direction: column; }
   .menu button { border: none; border-radius: 0; background: none; text-align: left; padding: 4px 14px; font-weight: 400; font-size: 13px; }
   .menu button:hover { background: var(--list-sel) !important; color: #fff; }
   .menu .ind { padding-left: 26px; }
-  .sub { color: #888; font-size: 12px; padding: 3px 14px 1px; }
-  hr { border: none; border-top: 1px solid #ddd; margin: 3px 0; }
+  .sub { color: var(--muted); font-size: 12px; padding: 3px 14px 1px; }
+  hr { border: none; border-top: 1px solid var(--border-soft); margin: 3px 0; }
 </style>

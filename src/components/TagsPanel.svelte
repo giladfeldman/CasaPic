@@ -76,18 +76,18 @@
 </aside>
 
 <style>
-  .tags { width: 236px; flex: none; background: #f3f3f3; border-left: 1px solid var(--chrome-line); overflow-y: auto; display: flex; flex-direction: column; }
+  .tags { width: 236px; flex: none; background: var(--surface-2); border-left: 1px solid var(--chrome-line); overflow-y: auto; display: flex; flex-direction: column; }
   header { background: linear-gradient(#9a9a9a, #7c7c7c); color: #fff; font-weight: 600; font-size: 14px; text-align: center; padding: 5px; position: relative; }
   .x { position: absolute; right: 6px; top: 3px; padding: 0 6px; font-size: 11px; }
   .add { display: flex; gap: 4px; padding: 8px; }
   .add input { flex: 1; min-width: 0; padding: 3px 5px; }
-  .hint { color: #777; margin: 0; padding: 0 8px 6px; font-size: 12px; }
-  .list { border-top: 1px solid #ddd; }
-  .tag { display: flex; justify-content: space-between; align-items: center; padding: 3px 8px; border-bottom: 1px solid #e4e4e4; }
-  .tag button { border: none; background: none; color: #a00; padding: 0 4px; font-size: 11px; }
-  .none { color: #999; font-style: italic; padding: 6px 8px; margin: 0; }
-  .sub { color: #888; font-size: 12px; padding: 10px 8px 4px; }
+  .hint { color: var(--muted); margin: 0; padding: 0 8px 6px; font-size: 12px; }
+  .list { border-top: 1px solid var(--border-soft); }
+  .tag { display: flex; justify-content: space-between; align-items: center; padding: 3px 8px; border-bottom: 1px solid var(--border-soft); }
+  .tag button { border: none; background: none; color: var(--error); padding: 0 4px; font-size: 11px; }
+  .none { color: var(--muted); font-style: italic; padding: 6px 8px; margin: 0; }
+  .sub { color: var(--muted); font-size: 12px; padding: 10px 8px 4px; }
   .quick { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px; }
   .quick button { font-weight: 400; font-size: 12px; padding: 1px 7px; border-radius: 10px; }
-  .note { color: #888; font-size: 11px; line-height: 1.35; padding: 12px 8px; margin: 0; }
+  .note { color: var(--muted); font-size: 11px; line-height: 1.35; padding: 12px 8px; margin: 0; }
 </style>

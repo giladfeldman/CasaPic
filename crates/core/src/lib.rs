@@ -22,6 +22,7 @@ pub mod tags;
 pub mod scan;
 pub mod search;
 pub mod settings;
+pub mod studio;
 pub mod sidecar;
 pub mod thumbs;
 pub mod watch;

@@ -70,6 +70,16 @@ pub enum Op {
     FocalBw { x: f32, y: f32, size: f32, sharpness: f32 },
     /// Graduated Tint: handle position (fractions), feather 0–1, shade 0–1, colour, turn
     GradTint { x: f32, y: f32, feather: f32, shade: f32, color: Rgb, turn: f32 },
+    /// Studio tab, Tune Image (Snapseed's ranges, −100 to 100): brightness, contrast,
+    /// saturation, ambiance, highlights, shadows, warmth
+    TuneImage { brightness: f32, contrast: f32, saturation: f32, ambiance: f32, highlights: f32, shadows: f32, warmth: f32 },
+    /// Studio tab, Details: structure −100 to 100, sharpening 0 to 100
+    Details { structure: f32, sharpening: f32 },
+    /// Studio tab, Vignette: outer and inner brightness −100 to 100, centre size 0 to 100,
+    /// centre (fractions of the picture)
+    Vignette { outer: f32, inner: f32, size: f32, x: f32, y: f32 },
+    /// Studio tab, HDR Scape: strength 0 to 100, brightness and saturation −100 to 100
+    HdrScape { strength: f32, brightness: f32, saturation: f32 },
     /// an entry this version does not understand; kept verbatim so it is not lost
     Unknown(String),
 }
@@ -99,6 +109,10 @@ impl Op {
             Op::FilteredBw(_) => "Filtered B&W",
             Op::FocalBw { .. } => "Focal B&W",
             Op::GradTint { .. } => "Graduated Tint",
+            Op::TuneImage { .. } => "Tune Image",
+            Op::Details { .. } => "Details",
+            Op::Vignette { .. } => "Vignette",
+            Op::HdrScape { .. } => "HDR Scape",
             Op::Unknown(_) => "Edit",
         }
     }
@@ -153,6 +167,14 @@ pub fn to_string(ops: &[Op]) -> String {
             Op::GradTint { x, y, feather, shade, color, turn } => {
                 write!(s, "dir_tint=1,{},{},{},{},{},{};", f(*x), f(*y), f(*feather), f(*shade), hex(*color), f(*turn))
             }
+            Op::TuneImage { brightness, contrast, saturation, ambiance, highlights, shadows, warmth } => write!(
+                s,
+                "cp_tune=1,{},{},{},{},{},{},{};",
+                f(*brightness), f(*contrast), f(*saturation), f(*ambiance), f(*highlights), f(*shadows), f(*warmth)
+            ),
+            Op::Details { structure, sharpening } => write!(s, "cp_details=1,{},{};", f(*structure), f(*sharpening)),
+            Op::Vignette { outer, inner, size, x, y } => write!(s, "cp_vignette=1,{},{},{},{},{};", f(*outer), f(*inner), f(*size), f(*x), f(*y)),
+            Op::HdrScape { strength, brightness, saturation } => write!(s, "cp_hdr=1,{},{},{};", f(*strength), f(*brightness), f(*saturation)),
             Op::Unknown(raw) => write!(s, "{raw};"),
         };
     }
@@ -262,6 +284,22 @@ fn parse_one(key: &str, version: &str, r: &[&str]) -> Option<Op> {
             len(6)?;
             Op::GradTint { x: n(0)?, y: n(1)?, feather: n(2)?, shade: n(3)?, color: c(4)?, turn: n(5)? }
         }
+        "cp_tune" => {
+            len(7)?;
+            Op::TuneImage { brightness: n(0)?, contrast: n(1)?, saturation: n(2)?, ambiance: n(3)?, highlights: n(4)?, shadows: n(5)?, warmth: n(6)? }
+        }
+        "cp_details" => {
+            len(2)?;
+            Op::Details { structure: n(0)?, sharpening: n(1)? }
+        }
+        "cp_vignette" => {
+            len(5)?;
+            Op::Vignette { outer: n(0)?, inner: n(1)?, size: n(2)?, x: n(3)?, y: n(4)? }
+        }
+        "cp_hdr" => {
+            len(3)?;
+            Op::HdrScape { strength: n(0)?, brightness: n(1)?, saturation: n(2)? }
+        }
         _ => return None,
     })
 }
@@ -306,6 +344,10 @@ mod tests {
             Op::FocalBw { x: 0.3, y: 1.0, size: -0.5, sharpness: 0.5 },
             Op::GradTint { x: 0.5, y: 0.5, feather: 0.25, shade: 0.25, color: Rgb(0xffff_ffff), turn: 0.0 },
             Op::Flip(3),
+            Op::TuneImage { brightness: 10.0, contrast: -5.0, saturation: 20.0, ambiance: 30.0, highlights: -40.0, shadows: 15.0, warmth: 5.0 },
+            Op::Details { structure: 25.0, sharpening: 10.0 },
+            Op::Vignette { outer: -64.4, inner: 14.0, size: 20.8, x: 0.5, y: 0.5 },
+            Op::HdrScape { strength: 50.0, brightness: 0.0, saturation: -10.0 },
             Op::Unknown("future=2,1,2".into()),
         ];
         let s = to_string(&ops);
