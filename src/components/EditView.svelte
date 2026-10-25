@@ -2,8 +2,9 @@
   // Edit view: one photo, Picasa's three editing tabs (Basic Fixes, Tuning, Effects), Undo/Redo
   // that name the action, a filmstrip of the folder. Every fix is rendered by the Rust core and
   // saved to the sidecar at once; sliders preview live without saving.
+  import { tick } from "svelte";
   import { store } from "../lib/store.svelte";
-  import { api, fetchPreview, fxUrl, thumbUrl, type EditState, type Fix, type Photo } from "../lib/api";
+  import { api, fetchPreview, fetchView, fxUrl, thumbUrl, type EditState, type Fix, type Photo } from "../lib/api";
   import { EFFECTS, NO_TUNE, defaults, parseTune, toHex, tuneText, type Effect, type Tune, type Values } from "../lib/effects";
 
   type Mode = "fixes" | "crop" | "straighten";
@@ -56,6 +57,9 @@
     tune = { ...NO_TUNE };
     tuneSaved = false;
     fxV = 0;
+    zoom = "fit";
+    compare = false;
+    holding = false;
     const edge = Math.min(4096, Math.max(512, Math.ceil((Math.max(frameW, frameH) * devicePixelRatio) / 256) * 256));
     api.photo(target).then((p) => t === ticket && (photo = p));
     run(() => api.editOpen(target, edge), t).then(() => {
@@ -364,12 +368,121 @@
   // the tray's rotate buttons must go through this session, or its next save would undo them
   $effect(() => {
     store.editRotate = (turns: number) => apply("rotate", [turns]);
+    store.editFlip = (bits: number) => apply("flip", [bits]);
     store.editAdd = (text: string) => run(() => api.editAdd(text));
     return () => {
       store.editRotate = null;
+      store.editFlip = null;
       store.editAdd = null;
     };
   });
+
+  // ---- zoom, and before and after ----
+  /** "fit": the whole photo in the frame; "actual": one photo pixel per screen pixel, dragged
+   *  to look around (rendered at full size by the core, as Save would) */
+  let zoom = $state<"fit" | "actual">("fit");
+  /** side by side: the original on the left, the edited photo on the right */
+  let compare = $state(false);
+  /** the original shown while the "Hold for Original" button is held down */
+  let holding = $state(false);
+  let bigCanvas: HTMLCanvasElement | undefined = $state();
+  let bigSize = $state({ w: 0, h: 0 });
+  let origCanvas: HTMLCanvasElement | undefined = $state();
+  let holdCanvas: HTMLCanvasElement | undefined = $state();
+  let sideCanvas: HTMLCanvasElement | undefined = $state();
+  let zoomer: HTMLDivElement | undefined = $state();
+  let viewBusy = $state(false);
+  /** the original, fetched once per photo */
+  let original: ImageBitmap | null = null;
+  let originalOf = -1;
+
+  async function getOriginal(): Promise<ImageBitmap | null> {
+    if (st && originalOf === st.id && original) return original;
+    const v = await api.editView("original");
+    original?.close();
+    original = await fetchView(v.version);
+    originalOf = st?.id ?? -1;
+    return original;
+  }
+  function paint(c: HTMLCanvasElement | undefined, img: CanvasImageSource & { width: number; height: number }) {
+    if (!c) return;
+    c.width = img.width;
+    c.height = img.height;
+    c.getContext("2d")!.drawImage(img, 0, 0);
+  }
+  async function showView(work: () => Promise<void>) {
+    viewBusy = true;
+    error = null;
+    try {
+      await settled();
+      await work();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      viewBusy = false;
+    }
+  }
+  async function setZoom(z: "fit" | "actual") {
+    zoom = z;
+    if (z === "fit") return;
+    compare = false;
+    const at = st?.version;
+    zoomedAt = at ?? -1;
+    await showView(async () => {
+      const v = await api.editView("actual");
+      const img = await fetchView(v.version);
+      if (zoom !== "actual" || st?.version !== at) return img.close();
+      paint(bigCanvas, img);
+      bigSize = { w: img.width / devicePixelRatio, h: img.height / devicePixelRatio };
+      img.close();
+      // start in the middle of the photo
+      await tick();
+      if (zoomer) {
+        zoomer.scrollLeft = (zoomer.scrollWidth - zoomer.clientWidth) / 2;
+        zoomer.scrollTop = (zoomer.scrollHeight - zoomer.clientHeight) / 2;
+      }
+    });
+  }
+  // an edit while zoomed in: show it at full size again
+  let zoomedAt = -1;
+  $effect(() => {
+    const v = st?.version ?? -1;
+    if (zoom === "actual" && v !== zoomedAt && !busy) setZoom("actual");
+  });
+  async function toggleCompare() {
+    compare = !compare;
+    if (!compare) return;
+    zoom = "fit";
+    await showView(async () => {
+      const o = await getOriginal();
+      if (o && compare) paint(origCanvas, o);
+      if (canvas && compare) paint(sideCanvas, canvas);
+    });
+  }
+  // keep the right-hand side of the comparison current after each edit
+  $effect(() => {
+    void st?.version;
+    if (compare && canvas && sideCanvas && !busy) paint(sideCanvas, canvas);
+  });
+  async function holdDown() {
+    holding = true;
+    await showView(async () => {
+      const o = await getOriginal();
+      if (o && holding) paint(holdCanvas, o);
+    });
+  }
+  // dragging a zoomed photo
+  let pan: { x: number; y: number; l: number; t: number } | null = null;
+  function panDown(e: PointerEvent) {
+    if (!zoomer) return;
+    pan = { x: e.clientX, y: e.clientY, l: zoomer.scrollLeft, t: zoomer.scrollTop };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function panMove(e: PointerEvent) {
+    if (!pan || !zoomer) return;
+    zoomer.scrollLeft = pan.l - (e.clientX - pan.x);
+    zoomer.scrollTop = pan.t - (e.clientY - pan.y);
+  }
 
   // ---- Save / Revert ----
   async function save() {
@@ -395,7 +508,7 @@
   });
 
   function onKey(e: KeyboardEvent) {
-    if (store.view !== "edit" || (e.target as HTMLElement)?.closest("input, select, dialog")) return;
+    if (store.view !== "edit" || store.slideshow || (e.target as HTMLElement)?.closest("input, select, dialog")) return;
     const k = e.key.toLowerCase();
     if (k === "escape") {
       if (mode !== "fixes") { mode = "fixes"; crop = null; angle = 0; }
@@ -408,8 +521,8 @@
     else if (e.ctrlKey && k === "z" && st?.undo) undo(false);
     else if (e.ctrlKey && k === "y" && st?.redo) undo(true);
     else if (e.ctrlKey && k === "r") apply("rotate", [e.shiftKey ? -1 : 1]);
-    else if (e.ctrlKey && e.shiftKey && k === "c" && id != null) store.copyEffects(id);
-    else if (e.ctrlKey && e.shiftKey && k === "v") store.pasteEffects();
+    else if (e.ctrlKey && e.shiftKey && k === "h") apply("flip", [1]);
+    else if (e.ctrlKey && e.shiftKey && k === "v") apply("flip", [2]);
     else if (e.ctrlKey && !e.shiftKey && k === "s") save();
     else if (e.ctrlKey && e.shiftKey && k === "e") apply("lucky");
     else if (e.ctrlKey && e.shiftKey && k === "s") store.exportFor = store.picked();
@@ -585,9 +698,34 @@
           </div>
         {/if}
       </div>
-      {#if busy}<div class="busy">Working…</div>{/if}
+      {#if zoom === "actual" && mode === "fixes"}
+        <div class="zoomer" bind:this={zoomer} role="presentation" onpointerdown={panDown} onpointermove={panMove} onpointerup={() => (pan = null)}>
+          <canvas bind:this={bigCanvas} style:width="{bigSize.w}px" style:height="{bigSize.h}px"></canvas>
+        </div>
+      {/if}
+      {#if compare && mode === "fixes"}
+        <div class="compare">
+          <figure><canvas bind:this={origCanvas}></canvas><figcaption>Original</figcaption></figure>
+          <figure><canvas bind:this={sideCanvas}></canvas><figcaption>Edited</figcaption></figure>
+        </div>
+      {/if}
+      {#if holding}
+        <div class="holdview"><canvas bind:this={holdCanvas}></canvas><span class="tag">Original</span></div>
+      {/if}
+      {#if busy || viewBusy}<div class="busy">Working…</div>{/if}
       {#if error}<div class="err">{error}</div>{/if}
     </div>
+    {#if mode === "fixes"}
+      <div class="viewbar">
+        <button class:on={zoom === "fit" && !compare} title="The whole photo in the window" onclick={() => { compare = false; setZoom("fit"); }}>Fit</button>
+        <button class:on={zoom === "actual"} title="Actual size: one photo pixel per screen pixel; drag to look around" onclick={() => setZoom("actual")}>100%</button>
+        <span class="sep"></span>
+        <button class:on={compare} title="The original and the edited photo side by side" onclick={toggleCompare}>Before / After</button>
+        <button title="Hold down to see the original" onpointerdown={holdDown} onpointerup={() => (holding = false)} onpointerleave={() => (holding = false)}>Hold for Original</button>
+        <span class="sep"></span>
+        <button title="Full screen (F11)" onclick={() => store.toggleFullScreen()}>Full Screen</button>
+      </div>
+    {/if}
     <div class="caption">
       <input bind:value={caption} placeholder="Make a caption!" maxlength="2000" title="The caption is written into the photo file, where Picasa and other programs read it"
         onblur={saveCaption}
@@ -647,6 +785,19 @@
   .caption { flex: none; background: #d8d8d8; padding: 4px 0 8px; display: flex; justify-content: center; }
   .caption input { width: min(600px, 80%); text-align: center; font-size: 14px; background: #ffffffcc; border: 1px solid #bbb; padding: 3px 6px; }
   .caption input::placeholder { color: #777; font-style: italic; }
+  .zoomer { position: absolute; inset: 0; overflow: auto; background: #d8d8d8; cursor: grab; display: grid; place-items: center; }
+  .zoomer:active { cursor: grabbing; }
+  .zoomer canvas { display: block; max-width: none; }
+  .compare { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; background: #d8d8d8; }
+  .compare figure { margin: 0; display: flex; flex-direction: column; align-items: center; min-width: 0; min-height: 0; }
+  .compare canvas, .holdview canvas { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; }
+  .compare figcaption { font-size: 12px; color: #444; padding-top: 4px; }
+  .holdview { position: absolute; inset: 0; display: flex; padding: 20px; background: #d8d8d8; }
+  .holdview .tag { position: absolute; left: 12px; top: 10px; background: #0008; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
+  .viewbar { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 0; background: #d8d8d8; }
+  .viewbar button { font-size: 12px; padding: 2px 10px; }
+  .viewbar button.on { background: #cfe0f3; border-color: #6f9fd8; }
+  .viewbar .sep { width: 12px; }
   .frame { flex: 1; position: relative; display: grid; place-items: center; background: #d8d8d8; min-width: 0; overflow: hidden; }
   .pic { position: relative; overflow: hidden; background: #3c3c3c; box-shadow: 0 0 0 6px #4a4a4a, 0 4px 14px #0006; }
   .pic canvas { display: block; transform-origin: 50% 50%; }

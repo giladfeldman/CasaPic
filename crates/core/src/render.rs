@@ -171,6 +171,7 @@ pub fn apply_one_scaled(img: Img, op: &Op, scale: f32) -> Img {
     }
     match op {
         Op::Rotate(q) => rotate_quarter(&img, q.rem_euclid(4)),
+        Op::Flip(b) => flip(&img, *b),
         Op::Crop { x0, y0, x1, y1 } => crop(&img, *x0, *y0, *x1, *y1),
         Op::Straighten(a) => straighten(&img, *a),
         Op::AutoContrast { lo, hi } => {
@@ -363,6 +364,21 @@ pub(crate) fn fill_light(img: &mut Img, a: f32) {
 
 // ---------- geometry ----------
 
+/// Mirrors the picture: bit 1 left-right, bit 2 top-bottom.
+fn flip(img: &Img, b: u8) -> Img {
+    let (w, h) = (img.w, img.h);
+    let mut px = vec![0.0f32; img.px.len()];
+    px.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+        let sy = if b & 2 != 0 { h - 1 - y } else { y };
+        for x in 0..w {
+            let sx = if b & 1 != 0 { w - 1 - x } else { x };
+            let s = (sy * w + sx) * 3;
+            row[x * 3..x * 3 + 3].copy_from_slice(&img.px[s..s + 3]);
+        }
+    });
+    Img { w, h, px }
+}
+
 fn rotate_quarter(img: &Img, q: i32) -> Img {
     if q == 0 {
         return img.clone();
@@ -454,6 +470,17 @@ fn bilinear(img: &Img, x: f32, y: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flip_mirrors_and_both_ways_is_a_half_turn() {
+        let img = ramp(5, 3);
+        let lr = apply(&img, &[Op::Flip(1)]);
+        assert_eq!(&lr.px[0..3], &img.px[4 * 3..5 * 3], "left-right: first pixel is the old last of the row");
+        let tb = apply(&img, &[Op::Flip(2)]);
+        assert_eq!(&tb.px[0..3], &img.px[2 * 5 * 3..2 * 5 * 3 + 3]);
+        assert_eq!(apply(&img, &[Op::Flip(3)]).px, apply(&img, &[Op::Rotate(2)]).px);
+        assert_eq!(apply(&img, &[Op::Flip(1), Op::Flip(1)]).px, img.px);
+    }
 
     fn ramp(w: usize, h: usize) -> Img {
         let mut px = Vec::with_capacity(w * h * 3);

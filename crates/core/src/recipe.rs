@@ -32,6 +32,8 @@ impl Rgb {
 pub enum Op {
     /// quarter turns clockwise (1–3)
     Rotate(i32),
+    /// mirror: 1 = left-right, 2 = top-bottom, 3 = both (Picasa's Ctrl+Shift+H / V)
+    Flip(u8),
     /// crop rectangle as fractions (0–1) of the picture at this point in the recipe
     Crop { x0: f32, y0: f32, x1: f32, y1: f32 },
     /// straighten angle in degrees, positive = clockwise
@@ -77,6 +79,7 @@ impl Op {
     pub fn label(&self) -> &'static str {
         match self {
             Op::Rotate(_) => "Rotate",
+            Op::Flip(_) => "Flip",
             Op::Crop { .. } => "Crop",
             Op::Straighten(_) => "Straighten",
             Op::AutoContrast { .. } => "Auto Contrast",
@@ -103,7 +106,7 @@ impl Op {
     /// True for fixes that only change colours and tones (no geometry): these can be copied
     /// from one photo to another ("Copy All Effects").
     pub fn is_effect(&self) -> bool {
-        !matches!(self, Op::Rotate(_) | Op::Crop { .. } | Op::Straighten(_) | Op::Unknown(_))
+        !matches!(self, Op::Rotate(_) | Op::Flip(_) | Op::Crop { .. } | Op::Straighten(_) | Op::Unknown(_))
     }
 }
 
@@ -122,6 +125,7 @@ pub fn to_string(ops: &[Op]) -> String {
     for op in ops {
         let _ = match op {
             Op::Rotate(q) => write!(s, "rot=1,{q};"),
+            Op::Flip(b) => write!(s, "flip=1,{b};"),
             Op::Crop { x0, y0, x1, y1 } => write!(s, "crop=1,{},{},{},{};", f(*x0), f(*y0), f(*x1), f(*y1)),
             Op::Straighten(a) => write!(s, "tilt=1,{};", f(*a)),
             Op::AutoContrast { lo, hi } => write!(s, "autolight=1,{},{};", f(*lo), f(*hi)),
@@ -176,6 +180,11 @@ fn parse_one(key: &str, version: &str, r: &[&str]) -> Option<Op> {
         "rot" => {
             len(1)?;
             Op::Rotate(n(0)? as i32)
+        }
+        "flip" => {
+            len(1)?;
+            let b = n(0)? as u8;
+            (1..=3).contains(&b).then_some(Op::Flip(b))?
         }
         "crop" => {
             len(4)?;
@@ -296,6 +305,7 @@ mod tests {
             Op::FilteredBw(Rgb(0xffff_0000)),
             Op::FocalBw { x: 0.3, y: 1.0, size: -0.5, sharpness: 0.5 },
             Op::GradTint { x: 0.5, y: 0.5, feather: 0.25, shade: 0.25, color: Rgb(0xffff_ffff), turn: 0.0 },
+            Op::Flip(3),
             Op::Unknown("future=2,1,2".into()),
         ];
         let s = to_string(&ops);

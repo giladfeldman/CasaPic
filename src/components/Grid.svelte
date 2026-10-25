@@ -199,7 +199,10 @@
           >
         {/if}
         <div>
-          <div class="title georgia">{b.folder.name}</div>
+          <div class="title georgia">{b.folder.name}
+            <button class="play" title="Play a slideshow of these photos (Ctrl+4)" onclick={() => store.startSlideshow(b.folder.photos.map((p) => p[0]))}>▶</button>
+            <button class="play coll" title="Make a picture collage of these photos" onclick={() => store.collage(b.folder.photos.map((p) => p[0]))}>▦</button>
+          </div>
           <div class="date">{fmtDay(b.folder.first ?? b.folder.date)} · {b.folder.photos.length} picture{b.folder.photos.length === 1 ? "" : "s"}</div>
           {#if b.folder.id < -1}
             <!-- a month of the timeline: no description -->
@@ -260,6 +263,8 @@
   .space { position: relative; }
   .head { position: absolute; left: 20px; right: 20px; height: 84px; display: flex; gap: 10px; align-items: flex-start; padding-top: 8px; }
   .title { font-size: 20px; color: var(--title); line-height: 1.1; }
+  .play.coll { margin-left: 4px; color: #3d6ea8; }
+  .play { margin-left: 10px; vertical-align: 3px; font-size: 11px; color: #2a8a2a; padding: 1px 7px; border-radius: 3px; }
   .date { color: #555; margin-top: 3px; }
   .head > div { flex: 1; min-width: 0; }
   .desc { display: block; border: none; background: none; padding: 1px 0; margin-top: 3px; font-weight: 400; font-size: 13px; color: #333; text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

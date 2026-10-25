@@ -19,6 +19,9 @@
   import TagsPanel from "./components/TagsPanel.svelte";
   import FilterBar from "./components/FilterBar.svelte";
   import PicasaImport from "./components/PicasaImport.svelte";
+  import Slideshow from "./components/Slideshow.svelte";
+  import PrintDialog from "./components/PrintDialog.svelte";
+  import Collage from "./components/Collage.svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import type { FolderSort } from "./lib/store.svelte";
 
@@ -114,6 +117,8 @@
         { label: "Save a Copy", run: () => store.saveCopy(), enabled: store.picked().length === 1 },
         { label: "Save As…", run: () => store.saveAs(), enabled: store.picked().length === 1 },
         { label: "Export Picture to Folder…", keys: "Ctrl+Shift+S", run: exportPicked, enabled: has() },
+        { label: "Print…", keys: "Ctrl+P", run: () => store.print(), enabled: has() },
+        { label: "Print Contact Sheet…", keys: "Ctrl+Shift+P", run: () => store.print(true), enabled: has() },
         "-",
         { label: "Rename…", keys: "F2", run: () => store.renamePicked(), enabled: store.picked().length === 1 },
         { label: "Delete from Disk", keys: "Del", run: () => store.deletePicked(), enabled: has() },
@@ -147,6 +152,8 @@
       items: [
         { label: "Library View", keys: "Esc", run: () => (store.view = "library"), checked: store.view === "library" },
         { label: "Edit View", keys: "Ctrl+3", run: () => openEdit(), enabled: has(), checked: store.view === "edit" },
+        { label: "Slideshow", keys: "Ctrl+4", run: () => store.startSlideshow(), enabled: store.order.length > 0 },
+        { label: "Full Screen", keys: "F11", run: () => store.toggleFullScreen() },
         "-",
         { label: "Small Thumbnails", keys: "Ctrl+1", run: () => store.setThumbSize(80) },
         { label: "Normal Thumbnails", keys: "Ctrl+2", run: () => store.setThumbSize(140) },
@@ -168,6 +175,8 @@
         { label: "View and Edit", keys: "Ctrl+3", run: () => openEdit(), enabled: has() },
         { label: "Rotate Clockwise", keys: "Ctrl+R", run: () => store.rotate(1), enabled: has() },
         { label: "Rotate Counterclockwise", keys: "Ctrl+Shift+R", run: () => store.rotate(-1), enabled: has() },
+        { label: "Flip Horizontal", keys: "Ctrl+Shift+H", run: () => store.flip(1), enabled: has() },
+        { label: "Flip Vertical", keys: "Ctrl+Shift+V", run: () => store.flip(2), enabled: has() },
         { label: "Star / Unstar", run: () => store.toggleStar(), enabled: has() },
         { label: "Adjust Date and Time…", run: () => (store.dateFor = store.picked()), enabled: has() },
         "-",
@@ -176,11 +185,15 @@
         { label: "Hide", run: () => store.hidePicked(true), enabled: has() && !store.picked().every((id) => store.hiddenIds.has(id)) },
         { label: "Unhide", run: () => store.hidePicked(false), enabled: has() && store.picked().some((id) => store.hiddenIds.has(id)) },
         "-",
-        { label: "Copy All Effects", keys: "Ctrl+Shift+C", run: () => store.copyEffects(), enabled: store.picked().length === 1 },
-        { label: "Paste All Effects", keys: "Ctrl+Shift+V", run: () => store.pasteEffects(), enabled: has() && !!store.effectsClip },
+        { label: "Copy All Effects", run: () => store.copyEffects(), enabled: store.picked().length === 1 },
+        { label: "Paste All Effects", run: () => store.pasteEffects(), enabled: has() && !!store.effectsClip },
         "-",
         ...BATCH.map(([label, kind]) => ({ label: `Batch Edit: ${label}`, run: () => store.batch(kind, label), enabled: has() })),
       ],
+    },
+    {
+      label: "Create",
+      items: [{ label: "Picture Collage…", run: () => store.collage(), enabled: has() || store.order.length > 0 }],
     },
     {
       label: "Tools",
@@ -207,6 +220,22 @@
     if ((e.target as HTMLElement)?.closest("input, select, textarea, dialog")) return;
     const k = e.key.toLowerCase();
     const ctrl = e.ctrlKey;
+    if (store.slideshow || store.collageFor || store.printFor) return; // these have their own keys
+    if (ctrl && k === "p") {
+      e.preventDefault();
+      store.print(e.shiftKey);
+      return;
+    }
+    if (ctrl && k === "4") {
+      e.preventDefault();
+      store.startSlideshow();
+      return;
+    }
+    if (k === "f11") {
+      e.preventDefault();
+      store.toggleFullScreen();
+      return;
+    }
     if (store.view === "edit") return; // the Edit view has its own keys
     if (ctrl && k === "a") store.selectAll();
     else if (ctrl && k === "d") store.clearSelection();
@@ -214,10 +243,10 @@
     else if (ctrl && k === "t") store.toggleTags();
     else if (ctrl && k === "f") filter?.focus();
     else if (ctrl && k === "5") store.toggleTimeline();
+    else if (ctrl && e.shiftKey && k === "h") store.flip(1);
+    else if (ctrl && e.shiftKey && k === "v") store.flip(2);
     else if (ctrl && k === "h") store.toggleHold();
     else if (ctrl && k === "r") store.rotate(e.shiftKey ? -1 : 1);
-    else if (ctrl && e.shiftKey && k === "c") store.copyEffects();
-    else if (ctrl && e.shiftKey && k === "v") store.pasteEffects();
     else if (ctrl && e.shiftKey && k === "o") store.openWith("editor");
     else if (ctrl && k === "x") store.cutOrCopy(true);
     else if (ctrl && k === "c") store.cutOrCopy(false);
@@ -259,6 +288,9 @@
   {#if store.prompt || store.confirm}<Ask />{/if}
   {#if store.albumPicker}<AlbumPicker />{/if}
   {#if store.albumDialog}<AlbumDialog />{/if}
+  {#if store.slideshow}<Slideshow />{/if}
+  {#if store.collageFor}<Collage ids={store.collageFor} onclose={() => (store.collageFor = null)} />{/if}
+  {#if store.printFor}<PrintDialog ids={store.printFor.ids} contact={store.printFor.contact} onclose={() => (store.printFor = null)} />{/if}
   {#if picasaOpen}<PicasaImport onclose={() => (picasaOpen = false)} />{/if}
   {#if store.optionsOpen}<OptionsDialog onclose={() => (store.optionsOpen = false)} />{/if}
   {#if store.dateFor}<DateDialog ids={store.dateFor} onclose={() => (store.dateFor = null)} />{/if}

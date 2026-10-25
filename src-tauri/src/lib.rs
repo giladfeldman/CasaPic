@@ -199,6 +199,9 @@ pub struct App {
     jobs: Mutex<mpsc::Sender<Job>>,
     session: Mutex<Option<Session>>,
     preview: Mutex<Option<Frame>>,
+    /// the latest extra look at the open photo (original, or full size), apart from the
+    /// preview so the two never mix
+    view: Mutex<Option<Frame>>,
     /// the latest strip of effect thumbnails (JPEG)
     fx: Mutex<Option<Arc<Vec<u8>>>>,
     version: AtomicU64,
@@ -284,6 +287,20 @@ fn push_rotate(ops: &mut Vec<Op>, q: i32) {
         }
     } else if q.rem_euclid(4) != 0 {
         ops.push(Op::Rotate(q.rem_euclid(4)));
+    }
+}
+
+/// Adds a mirror (1 = left-right, 2 = top-bottom) to the picture as it looks now, merging it
+/// with a mirror just before it (the same mirror twice = none).
+fn push_flip(ops: &mut Vec<Op>, bits: u8) {
+    let bits = bits & 3;
+    if let Some(Op::Flip(b)) = ops.last_mut() {
+        *b ^= bits;
+        if *b == 0 {
+            ops.pop();
+        }
+    } else if bits != 0 {
+        ops.push(Op::Flip(bits));
     }
 }
 
@@ -424,6 +441,19 @@ fn rotate(app: State<'_, App>, ids: Vec<i64>, turns: i32) -> Res<()> {
         let p = app.db.photo(id).map_err(err)?.ok_or("photo not found")?;
         let mut ops = recipe::parse(&p.recipe);
         push_rotate(&mut ops, turns);
+        app.save_recipe(id, &ops)?;
+    }
+    Ok(())
+}
+
+/// Flip Horizontal / Vertical (Ctrl+Shift+H / V, as in Picasa): `bits` 1 = left-right,
+/// 2 = top-bottom, of the picture as it is shown.
+#[tauri::command(async)]
+fn flip(app: State<'_, App>, ids: Vec<i64>, bits: u8) -> Res<()> {
+    for id in ids {
+        let p = app.db.photo(id).map_err(err)?.ok_or("photo not found")?;
+        let mut ops = recipe::parse(&p.recipe);
+        push_flip(&mut ops, bits);
         app.save_recipe(id, &ops)?;
     }
     Ok(())
@@ -595,6 +625,45 @@ fn edit_edge(edge: u32) -> u32 {
     (edge.clamp(400, 4096).div_ceil(256) * 256).min(4096)
 }
 
+#[derive(serde::Serialize)]
+struct ViewFrame {
+    version: u64,
+    w: u32,
+    h: u32,
+}
+
+/// Another look at the open photo, sent at `/view/<version>`: "original" (no edits, screen size,
+/// for before and after) or "actual" (the edited photo at full resolution, for Actual Size).
+#[tauri::command(async)]
+fn edit_view(app: State<'_, App>, kind: String) -> Res<ViewFrame> {
+    let (id, ops) = {
+        let guard = app.session.lock().map_err(err)?;
+        let s = guard.as_ref().ok_or("no photo open")?;
+        (s.photo_id, s.ops().to_vec())
+    };
+    let rgb = match kind.as_str() {
+        "original" => {
+            let mut guard = app.session.lock().map_err(err)?;
+            let s = guard.as_mut().ok_or("no photo open")?;
+            if s.photo_id != id {
+                return Err("another photo was opened".into());
+            }
+            s.render(&[]).to_rgb8()
+        }
+        "actual" => {
+            let p = app.db.photo(id).map_err(err)?.ok_or("photo not found")?;
+            let path = app.db.photo_path(id).map_err(err)?.ok_or("photo not found")?;
+            let base = wic::orient(wic::decode(&path, None).map_err(err)?, p.orientation);
+            render::apply(&Img::from_rgb8(&base), &ops).to_rgb8()
+        }
+        _ => return Err(format!("unknown view {kind}")),
+    };
+    let f = frame_of(&rgb)?;
+    let (w, h) = (f.w, f.h);
+    *app.view.lock().map_err(err)? = Some(f);
+    Ok(ViewFrame { version: app.version.fetch_add(1, Ordering::Relaxed) + 1, w, h })
+}
+
 /// Opens a photo in the Edit view, decoded so its longer edge is about `edge` pixels.
 #[tauri::command(async)]
 fn edit_open(app: State<'_, App>, id: i64, edge: u32) -> Res<EditState> {
@@ -654,6 +723,10 @@ fn edit_apply(app: State<'_, App>, kind: String, params: Vec<f32>) -> Res<EditSt
         "rotate" => {
             push_rotate(&mut ops, p(0)? as i32);
             "Rotate"
+        }
+        "flip" => {
+            push_flip(&mut ops, p(0)? as u8);
+            "Flip"
         }
         "crop" => {
             let (x0, y0, x1, y1) = (p(0)?, p(1)?, p(2)?, p(3)?);
@@ -956,6 +1029,81 @@ fn respond(status: StatusCode, ctype: &str, cache: &str, body: Vec<u8>, extra: &
     b.body(body).expect("valid response")
 }
 
+/// At most this many full renders at once: a large one holds about 150 MB while it works, and
+/// a collage or print asks for dozens together (39 at once used up the memory and closed the
+/// app in the build-5 test).
+const RENDER_SLOTS: usize = 2;
+static RENDERING: (Mutex<usize>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+
+/// Holds one render slot until dropped.
+struct RenderSlot;
+impl RenderSlot {
+    fn take() -> RenderSlot {
+        let (m, cv) = &RENDERING;
+        let mut n = m.lock().unwrap_or_else(|e| e.into_inner());
+        while *n >= RENDER_SLOTS {
+            n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+        }
+        *n += 1;
+        RenderSlot
+    }
+}
+impl Drop for RenderSlot {
+    fn drop(&mut self) {
+        let (m, cv) = &RENDERING;
+        *m.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        cv.notify_one();
+    }
+}
+
+/// One photo with its edits as a JPEG, longer side at most `edge` (slideshow, print, collage).
+fn render_photo(app: &App, id: i64, edge: u32) -> Res<Vec<u8>> {
+    let _slot = RenderSlot::take();
+    let p = app.db.photo(id).map_err(err)?.ok_or("photo not found")?;
+    let path = app.db.photo_path(id).map_err(err)?.ok_or("photo not found")?;
+    let opt = export::ExportOptions { max_edge: Some(edge), quality: 90 };
+    export::render_jpeg(&path, p.orientation, &recipe::parse(&p.recipe), &opt).map_err(err)
+}
+
+/// Picture Collage: writes the finished collage (JPEG bytes in the request body, its name in
+/// the `x-name` header) as a new picture in the Collages folder; never overwrites.
+#[tauri::command(async)]
+fn save_collage(request: tauri::ipc::Request<'_>) -> Res<String> {
+    let tauri::ipc::InvokeBody::Raw(jpeg) = request.body() else {
+        return Err("no picture was sent".into());
+    };
+    if !jpeg.starts_with(&[0xFF, 0xD8]) || jpeg.len() < 1000 {
+        return Err("the collage is not a JPEG picture".into());
+    }
+    let raw = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or("Collage");
+    let name: String = urlencoding_decode(raw).chars().filter(|c| !r#"\/:*?"<>|"#.contains(*c) && !c.is_control()).collect();
+    let name = if name.trim().is_empty() { "Collage".to_string() } else { name.trim().to_string() };
+    let dir = paths::collage_dir();
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let dest = paths::unused_name(&dir, &name, "jpg");
+    std::fs::write(&dest, jpeg).map_err(err)?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// %XX decoding (the page sends the name with encodeURIComponent).
+fn urlencoding_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = ((b[i + 1] as char).to_digit(16), (b[i + 2] as char).to_digit(16)) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn serve(app: &App, path: &str) -> Response<Vec<u8>> {
     let not_found = || respond(StatusCode::NOT_FOUND, "text/plain", "no-store", Vec::new(), &[]);
     let mut parts = path.trim_start_matches('/').split('/');
@@ -969,6 +1117,18 @@ fn serve(app: &App, path: &str) -> Response<Vec<u8>> {
             Some(jpeg) => respond(StatusCode::OK, "image/jpeg", "no-store", jpeg.as_ref().clone(), &[]),
             None => not_found(),
         },
+        (Some("view"), _) => match app.view.lock().ok().and_then(|p| p.as_ref().map(|p| p.jpeg.clone())) {
+            Some(jpeg) => respond(StatusCode::OK, "image/jpeg", "no-store", jpeg.as_ref().clone(), &[]),
+            None => not_found(),
+        },
+        // the photo with its edits, longer side at most <edge>: /render/<id>/<edge>?v=<n>
+        (Some("render"), Some(id)) => {
+            let edge = parts.next().and_then(|e| e.parse::<u32>().ok()).unwrap_or(2048).clamp(64, 8192);
+            match id.parse::<i64>().ok().and_then(|id| render_photo(app, id, edge).ok()) {
+                Some(jpeg) => respond(StatusCode::OK, "image/jpeg", "max-age=31536000", jpeg, &[]),
+                None => not_found(),
+            }
+        }
         (Some("preview"), _) => match app.preview.lock().ok().and_then(|p| p.as_ref().map(|p| p.jpeg.clone())) {
             Some(jpeg) => respond(StatusCode::OK, "image/jpeg", "no-store", jpeg.as_ref().clone(), &[]),
             None => not_found(),
@@ -1061,6 +1221,7 @@ pub fn run() {
         jobs: Mutex::new(tx),
         session: Mutex::new(None),
         preview: Mutex::new(None),
+        view: Mutex::new(None),
         fx: Mutex::new(None),
         version: AtomicU64::new(0),
         watcher: Mutex::new(None),
@@ -1134,6 +1295,9 @@ pub fn run() {
             organize::search,
             organize::set_hidden,
             organize::picasa_import,
+            flip,
+            edit_view,
+            save_collage,
             organize::set_folder_hidden,
             files::rename_photo,
             files::delete_photos,
@@ -1167,6 +1331,48 @@ mod tests {
         assert_eq!(ops, vec![Op::AutoContrast { lo: 0.1, hi: 0.9 }], "four turns back = no rotation");
         push_rotate(&mut ops, -1);
         assert_eq!(ops.last(), Some(&Op::Rotate(3)), "counter-clockwise = three clockwise turns");
+    }
+
+    #[test]
+    fn flips_merge_and_cancel() {
+        let mut ops = vec![Op::Rotate(1)];
+        push_flip(&mut ops, 1);
+        push_flip(&mut ops, 2);
+        assert_eq!(ops, vec![Op::Rotate(1), Op::Flip(3)], "after the turn: mirrors what is shown");
+        push_flip(&mut ops, 1);
+        assert_eq!(ops.last(), Some(&Op::Flip(2)));
+        push_flip(&mut ops, 2);
+        assert_eq!(ops, vec![Op::Rotate(1)], "the same mirror twice = none");
+    }
+
+    #[test]
+    fn renders_wait_for_a_free_slot() {
+        use std::sync::atomic::AtomicUsize;
+        static NOW: AtomicUsize = AtomicUsize::new(0);
+        static MOST: AtomicUsize = AtomicUsize::new(0);
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let _s = RenderSlot::take();
+                    let n = NOW.fetch_add(1, Ordering::SeqCst) + 1;
+                    MOST.fetch_max(n, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    NOW.fetch_sub(1, Ordering::SeqCst);
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(MOST.load(Ordering::SeqCst), RENDER_SLOTS, "never more than the slots, and they are used");
+    }
+
+    #[test]
+    fn collage_names_decode() {
+        assert_eq!(urlencoding_decode("Sommer%20K%C3%BChe"), "Sommer Kühe");
+        assert_eq!(urlencoding_decode("100%"), "100%");
+        assert_eq!(urlencoding_decode("a%2"), "a%2");
+        assert_eq!(urlencoding_decode("%ä1"), "%ä1", "no panic on a letter after %");
     }
 
     #[test]

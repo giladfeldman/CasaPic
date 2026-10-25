@@ -32,6 +32,25 @@ pub fn known_pictures() -> Option<PathBuf> {
     }
 }
 
+/// Where Picture Collage saves, like Picasa's "Pictures\Picasa\Collages" (lab check). Under
+/// the data folder when a development or test override is set.
+pub fn collage_dir() -> PathBuf {
+    if std::env::var_os("CASAPIC_DATA").is_some() || std::env::var_os("CASAPIC_ROOTS").is_some() {
+        data_dir().join("Collages")
+    } else {
+        known_pictures().unwrap_or_else(data_dir).join("CasaPic Collages")
+    }
+}
+
+/// `dir/stem.ext`, or `stem-1.ext`, `stem-2.ext`… if that is taken.
+pub fn unused_name(dir: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
+    let first = dir.join(format!("{stem}.{ext}"));
+    if !first.exists() {
+        return first;
+    }
+    (1..).map(|n| dir.join(format!("{stem}-{n}.{ext}"))).find(|p| !p.exists()).expect("a free name")
+}
+
 /// Default export folder, like Picasa's "Pictures\Picasa\Exports". When a development or
 /// test override is set, exports go under the data folder instead, never the real Pictures.
 pub fn export_dir(folder_name: &str) -> PathBuf {

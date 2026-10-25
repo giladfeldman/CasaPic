@@ -1,5 +1,6 @@
 // Window-wide state shared by the views (Svelte 5 runes).
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, type Album, type AlbumRow, type Folder, type Options, type PhotoRow } from "./api";
 
 export type FolderSort = "date" | "changed" | "size" | "name";
@@ -107,6 +108,7 @@ class Store {
   drawn = $state<number | null>(null);
   /** set while the Edit view is open: rotations go through its undo history */
   editRotate: ((turns: number) => unknown) | null = null;
+  editFlip: ((bits: number) => unknown) | null = null;
   /** set while the Edit view is open: pasted effects go through its undo history */
   editAdd: ((text: string) => unknown) | null = null;
   /** effects copied with Copy All Effects (recipe text) */
@@ -301,6 +303,52 @@ class Store {
   async rotate(turns: number, ids = this.picked()) {
     if (this.view === "edit" && this.editRotate) await this.editRotate(turns);
     else if (ids.length) await api.rotate(ids, turns);
+  }
+  /** Flip Horizontal (1) / Vertical (2): mirrors the picture as it is shown */
+  async flip(bits: number, ids = this.picked()) {
+    if (this.view === "edit" && this.editFlip) await this.editFlip(bits);
+    else if (ids.length) await this.guard(() => api.flip(ids, bits));
+  }
+  /** the open Print dialog: its photos, and whether it is the contact sheet */
+  printFor = $state<{ ids: number[]; contact: boolean } | null>(null);
+  /** Print (Ctrl+P): the selection; Print Contact Sheet (Ctrl+Shift+P): the selection if more
+   *  than one photo, else the whole folder (or album) of the photo in focus */
+  print(contact = false) {
+    const sel = this.picked();
+    let ids = sel;
+    if (contact && sel.length <= 1 && this.focus != null) {
+      const f = this.folderOf.get(this.focus);
+      if (f) ids = f.photos.map((p) => p[0]);
+    }
+    if (ids.length) this.printFor = { ids, contact };
+  }
+  /** the open Picture Collage: its photos */
+  collageFor = $state<number[] | null>(null);
+  /** Picture Collage: the selection if more than one photo, else the folder (or album) of the
+   *  photo in focus */
+  collage(ids?: number[]) {
+    let list = ids ?? this.picked();
+    if (!ids && list.length <= 1 && this.focus != null) {
+      const f = this.folderOf.get(this.focus);
+      if (f) list = f.photos.map((p) => p[0]);
+    }
+    if (list.length) this.collageFor = list;
+  }
+  /** the running slideshow: its photos and where it starts */
+  slideshow = $state<{ ids: number[]; start: number } | null>(null);
+  /** Slideshow (Ctrl+4): the selected photos if more than one, else everything shown (the
+   *  folders, an album, a search or the timeline), from the photo in focus */
+  startSlideshow(ids?: number[]) {
+    const sel = this.picked();
+    const list = ids ?? (sel.length > 1 ? sel : this.order);
+    if (!list.length) return;
+    const start = this.focus != null ? Math.max(0, list.indexOf(this.focus)) : 0;
+    this.slideshow = { ids: list, start };
+  }
+  /** F11: the window fills the screen, or comes back */
+  async toggleFullScreen() {
+    const w = getCurrentWindow();
+    await w.setFullscreen(!(await w.isFullscreen()));
   }
 
   // ---- albums ----

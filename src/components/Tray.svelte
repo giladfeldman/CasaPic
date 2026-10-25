@@ -62,6 +62,7 @@
     <button class="big" title="Add the selected pictures to an album" disabled={!picked.length}
       onclick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); store.albumPicker = { x: r.left, y: r.top - 8, ids: picked }; }}
       >Add to Album ▴</button>
+    <button class="big" title="Print (Ctrl+P)" disabled={!picked.length} onclick={() => store.print()}>Print</button>
     <button class="big" title="Export Picture to Folder (Ctrl+Shift+S)" disabled={!picked.length} onclick={onexport}>Export</button>
   </div>
   {#if store.view === "library"}

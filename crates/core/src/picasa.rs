@@ -67,8 +67,9 @@ fn crop64(hex: &str) -> Option<Op> {
     (x1 > x0 && y1 > y0).then_some(Op::Crop { x0, y0, x1, y1 })
 }
 
-/// Translates a Picasa `filters=` line (and its separate `rotate=rotate(n)` line).
-pub fn translate(filters: &str, rotate: &str) -> (Vec<Step>, Vec<String>) {
+/// Translates a Picasa `filters=` line and its separate `flipped=flipped(n)` and
+/// `rotate=rotate(n)` lines.
+pub fn translate(filters: &str, flipped: &str, rotate: &str) -> (Vec<Step>, Vec<String>) {
     let mut steps = Vec::new();
     let mut unknown = Vec::new();
     for item in filters.split(';').map(str::trim).filter(|x| !x.is_empty()) {
@@ -93,12 +94,24 @@ pub fn translate(filters: &str, rotate: &str) -> (Vec<Step>, Vec<String>) {
             }
         }
     }
+    // Picasa's exports show the mirror coming after the crop (whose numbers are in the
+    // unmirrored photo) and before everything else; lab, format document
+    let bits = paren_number(flipped, "flipped").map(|n| (n & 3) as u8).unwrap_or(0);
+    if bits != 0 {
+        let at = steps.iter().take_while(|s| matches!(s, Step::Op(Op::Crop { .. }))).count();
+        steps.insert(at, Step::Op(Op::Flip(bits)));
+    }
     // the crop and straighten numbers are in the unrotated picture, so the turn comes last
-    let turns = rotate.trim().strip_prefix("rotate(").and_then(|r| r.strip_suffix(')')).and_then(|n| n.parse::<i32>().ok()).map(|n| n.rem_euclid(4)).unwrap_or(0);
+    let turns = paren_number(rotate, "rotate").map(|n| n.rem_euclid(4)).unwrap_or(0);
     if turns != 0 {
         steps.push(Step::Op(Op::Rotate(turns)));
     }
     (steps, unknown)
+}
+
+/// `name(n)` -> n
+fn paren_number(text: &str, name: &str) -> Option<i32> {
+    text.trim().strip_prefix(name)?.strip_prefix('(')?.strip_suffix(')')?.trim().parse().ok()
 }
 
 /// What one folder's `.picasa.ini` holds for the photos still in it. None if it has none.
@@ -118,7 +131,7 @@ pub fn read_folder(dir: &Path) -> Option<FolderImport> {
         if !dir.join(name).is_file() {
             continue;
         }
-        let (steps, unknown) = translate(&e.filters, e.get("rotate"));
+        let (steps, unknown) = translate(&e.filters, e.get("flipped"), e.get("rotate"));
         let p = PhotoImport {
             name: name.clone(),
             star: e.star,
@@ -243,22 +256,32 @@ mod tests {
     #[test]
     fn picasa_lines_translate_as_measured_in_the_lab() {
         // the crop drawn in the lab, and the crop on the rotated photo (leading zero dropped)
-        let (s, u) = translate("crop64=1,34dd34d2ca6eca3d;", "");
+        let (s, u) = translate("crop64=1,34dd34d2ca6eca3d;", "", "");
         assert!(u.is_empty());
         let Step::Op(Op::Crop { x0, y0, x1, y1 }) = s[0] else { panic!("{s:?}") };
         assert!((x0 - 0.2065).abs() < 1e-3 && (y0 - 0.2063).abs() < 1e-3 && (x1 - 0.7907).abs() < 1e-3 && (y1 - 0.7900).abs() < 1e-3);
-        let (s, _) = translate("crop64=1,873806d66e9f596;", "rotate(1)");
+        let (s, _) = translate("crop64=1,873806d66e9f596;", "", "rotate(1)");
         let Step::Op(Op::Crop { x0, y1, .. }) = s[0] else { panic!("{s:?}") };
         assert!((x0 - 0.0330).abs() < 1e-3 && (y1 - 0.9593).abs() < 1e-3);
         assert_eq!(s[1], Step::Op(Op::Rotate(1)), "the turn comes after the crop");
 
-        let (s, u) = translate("fill=1,0.504673;enhance=1;autolight=1;autocolor=1;tilt=1,1.000000,0.000000;sepia=1;notyet=1,0.5;", "");
+        let (s, u) = translate("fill=1,0.504673;enhance=1;autolight=1;autocolor=1;tilt=1,1.000000,0.000000;sepia=1;notyet=1,0.5;", "", "");
         assert_eq!(s[0], Step::Op(Op::Fill(0.504673)));
         assert_eq!(&s[1..4], &[Step::Auto("lucky"), Step::Auto("autocontrast"), Step::Auto("autocolor")]);
         assert_eq!(s[4], Step::Op(Op::Straighten(TILT_DEGREES)));
         assert_eq!(s[5], Step::Op(Op::Sepia));
         assert_eq!(u, ["notyet=1,0.5"], "kept and listed, not dropped");
         assert_eq!(s[6], Step::Op(Op::Unknown("notyet=1,0.5".into())));
+
+        // the two flips exported from the lab: after the crop, before the straighten, and the
+        // turn still last
+        let (s, _) = translate("crop64=1,873806d66e9f596;tilt=1,0.501917,0.000000;", "flipped(1)", "rotate(1)");
+        assert!(matches!(s[0], Step::Op(Op::Crop { .. })));
+        assert_eq!(s[1], Step::Op(Op::Flip(1)));
+        assert!(matches!(s[2], Step::Op(Op::Straighten(_))));
+        assert_eq!(s[3], Step::Op(Op::Rotate(1)));
+        let (s, _) = translate("tilt=1,1.000000,0.000000;", "flipped(2)", "");
+        assert_eq!(s[0], Step::Op(Op::Flip(2)));
     }
 
     #[test]

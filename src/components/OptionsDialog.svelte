@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Tools > Options: General and File Types, as in Picasa. Slideshow settings join in build 5.
+  // Tools > Options: General, File Types and Slideshow, as in Picasa.
   // Nothing is stored until OK; a change of file types reads the library again.
   import { api, type Options } from "../lib/api";
   import { store } from "../lib/store.svelte";
@@ -18,7 +18,7 @@
   // the stored list spells out every extension; the dialog shows one box per kind
   const SPELLED: Record<string, string[]> = { jpg: ["jpg", "jpeg", "jpe"], tiff: ["tif", "tiff"] };
 
-  let tab = $state<"general" | "types">("general");
+  let tab = $state<"general" | "types" | "slides">("general");
   let o = $state<Options | null>(null);
   let kinds = $state<Record<string, boolean>>({});
   let busy = $state(false);
@@ -63,6 +63,7 @@
     <div class="tabs">
       <button class:on={tab === "general"} onclick={() => (tab = "general")}>General</button>
       <button class:on={tab === "types"} onclick={() => (tab = "types")}>File Types</button>
+      <button class:on={tab === "slides"} onclick={() => (tab = "slides")}>Slideshow</button>
     </div>
     {#if o}
       <div class="body">
@@ -75,6 +76,13 @@
             <button onclick={clearCache}>Clear Thumbnail Cache</button>
             <span class="hint">{cleared ?? "Makes every thumbnail again from the photo files. Your photos are not touched."}</span>
           </div>
+        {:else if tab === "slides"}
+          <label>Display time
+            <input type="number" min="1" max="60" step="1" value={o.slide_seconds}
+              onchange={(e) => (o!.slide_seconds = Math.max(1, Math.min(60, Number(e.currentTarget.value) || 3)))} /> seconds per photo</label>
+          <label><input type="checkbox" checked={o.slide_transition !== "none"} onchange={(e) => (o!.slide_transition = e.currentTarget.checked ? "fade" : "none")} />
+            Fade from one photo to the next</label>
+          <p class="hint">The slideshow (Ctrl+4) fills the screen; the bar at the bottom also changes the time while it plays.</p>
         {:else}
           <p class="hint">Which kinds of files CasaPic shows. Unticking a kind only hides those files here.</p>
           {#each TYPES as [k, label]}
@@ -100,6 +108,7 @@
   .tabs button.on { background: #fff; font-weight: 600; }
   .body { background: #fff; border: 1px solid #bbb; border-top: none; padding: 12px; display: flex; flex-direction: column; gap: 9px; min-height: 190px; }
   label { display: flex; gap: 8px; align-items: flex-start; line-height: 1.35; }
+  label input[type="number"] { width: 60px; }
   .cache { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
   .hint { color: #777; font-size: 12px; margin: 0; }
   .err { color: #b00; }

@@ -79,13 +79,19 @@ export interface EditState {
   last: string;
 }
 
-export type Fix = "rotate" | "crop" | "straighten" | "autocontrast" | "autocolor" | "lucky" | "fill" | "revert";
+export type Fix = "rotate" | "flip" | "crop" | "straighten" | "autocontrast" | "autocolor" | "lucky" | "fill" | "revert";
 
 export const api = {
   library: () => invoke<Folder[]>("library"),
   photo: (id: number) => invoke<Photo>("photo", { id }),
   setStar: (ids: number[], star: boolean) => invoke<void>("set_star", { ids, star }),
   rotate: (ids: number[], turns: number) => invoke<void>("rotate", { ids, turns }),
+  /** bits: 1 = left-right, 2 = top-bottom */
+  flip: (ids: number[], bits: number) => invoke<void>("flip", { ids, bits }),
+  /** writes a finished collage (JPEG bytes) as a new picture; returns its path */
+  saveCollage: (jpeg: Uint8Array, name: string) => invoke<string>("save_collage", jpeg, { headers: { "x-name": encodeURIComponent(name) } }),
+  /** "original" (no edits) or "actual" (full size); the picture is at fetchView(version) */
+  editView: (kind: "original" | "actual") => invoke<{ version: number; w: number; h: number }>("edit_view", { kind }),
   counts: () => invoke<{ folders: number; photos: number }>("counts"),
   locate: (id: number) => invoke<void>("locate_on_disk", { id }),
   settings: () => invoke<Settings>("settings_get"),
@@ -155,9 +161,18 @@ export const api = {
 const ORIGIN = "http://casapic.localhost";
 
 export const thumbUrl = (id: number, v: number) => `${ORIGIN}/thumb/${id}?v=${v}`;
+/** the photo with its edits, its longer side `edge` pixels at most (slideshow, print, collage);
+ *  `v` changes when the photo or its edits change */
+export const renderUrl = (id: number, edge: number, v: number) => `${ORIGIN}/render/${id}/${edge}?v=${v}`;
 export const fxUrl = (v: number) => `${ORIGIN}/fx/${v}`;
 
 /** Fetches the Edit-view picture (JPEG) for a state returned by an edit command, decoded. */
+export async function fetchView(version: number): Promise<ImageBitmap> {
+  const r = await fetch(`${ORIGIN}/view/${version}`);
+  if (!r.ok) throw new Error(`view ${r.status}`);
+  return createImageBitmap(await r.blob());
+}
+
 export async function fetchPreview(version: number): Promise<ImageBitmap> {
   const r = await fetch(`${ORIGIN}/preview/${version}`);
   if (!r.ok) throw new Error(`preview ${r.status}`);
