@@ -2,15 +2,16 @@
   // The folder list: Picasa's flat list grouped by year, or a tree of the folders as they sit
   // on disk (View > Folder View). Right-click a folder for its own menu.
   import { store, type FolderSort } from "../lib/store.svelte";
-  import { api, type Folder } from "../lib/api";
+  import { tick } from "svelte";
+  import { api, type AlbumRow, type Folder } from "../lib/api";
 
   let { onpick }: { onpick: (folderId: number) => void } = $props();
 
   // Picasa groups the folder list under year headings when it is sorted by date.
   const groups = $derived.by(() => {
-    if (store.folderSort !== "date") return [{ year: "", folders: store.folders }];
+    if (store.folderSort !== "date") return [{ year: "", folders: store.sortedFolders }];
     const out: { year: string; folders: Folder[] }[] = [];
-    for (const f of store.folders) {
+    for (const f of store.sortedFolders) {
       const year = f.date == null ? "Undated" : String(new Date(f.date * 1000).getUTCFullYear());
       if (out.at(-1)?.year !== year) out.push({ year, folders: [] });
       out.at(-1)!.folders.push(f);
@@ -34,7 +35,7 @@
       }
       return n;
     };
-    for (const f of store.folders) {
+    for (const f of store.sortedFolders) {
       const root = f.root.replace(/[\\/]+$/, "");
       const top = get(root, true);
       // the folders between the start point and this one (they may hold no photos themselves)
@@ -95,14 +96,30 @@
     store.moveTo(JSON.parse(raw), path, e.ctrlKey);
   }
 
-  function pick(f: Folder | undefined) {
+  async function pick(f: Folder | undefined) {
     if (!f) return;
+    // leaving an open album or the timeline: the grid shows the folders again first
+    if (store.album || store.timeline) {
+      store.closeAlbum();
+      store.timeline = false;
+      await tick();
+    }
     store.activeFolder = f.id;
     onpick(f.id);
   }
+
+  // ---- albums ----
+  let albumMenu = $state<{ x: number; y: number; a: AlbumRow } | null>(null);
+  function dropOnAlbum(e: DragEvent, token: string) {
+    over = null;
+    const raw = e.dataTransfer?.getData(DRAG);
+    if (!raw) return;
+    e.preventDefault();
+    store.addToAlbum(token, JSON.parse(raw));
+  }
 </script>
 
-<svelte:window onclick={() => (menu = null)} />
+<svelte:window onclick={() => { menu = null; albumMenu = null; }} />
 
 {#snippet row(f: Folder, indent: number)}
   <button class="row" style:padding-left="{indent}px" class:sel={store.activeFolder === f.id} class:over={over === f.path} title={f.path}
@@ -111,7 +128,7 @@
     <svg viewBox="0 0 16 13" width="16" height="13" aria-hidden="true"
       ><path d="M1 2h5l1.5 1.5H15v8.5H1z" fill="#f1c35c" stroke="#c8962e" /></svg
     >
-    <span>{f.name} ({f.photos.length})</span>
+    <span class:hiddenf={f.hidden}>{f.name} ({f.photos.length}){f.hidden ? " · hidden" : ""}</span>
   </button>
 {/snippet}
 
@@ -135,10 +152,28 @@
 
 <aside class="list">
   <div class="cat">
-    <span>▾ Folders ({store.folders.length})</span>
+    <span>▾ Albums ({store.albums.length})</span>
+    <span class="views"><button title="New Album" onclick={() => store.newAlbum([])}>＋</button></span>
+  </div>
+  {#each store.albums as a (a.token)}
+    <button class="row" style:padding-left="17px" class:sel={store.album?.token === a.token} class:over={over === `album:${a.token}`}
+      title={a.description || a.name} onclick={() => store.openAlbum(a.token)}
+      oncontextmenu={(e) => { e.preventDefault(); albumMenu = { x: e.clientX, y: e.clientY, a }; }}
+      ondragover={(e) => dragOver(e, `album:${a.token}`)} ondragleave={() => (over = null)} ondrop={(e) => dropOnAlbum(e, a.token)}>
+      <svg viewBox="0 0 16 13" width="16" height="13" aria-hidden="true"
+        ><rect x="1.5" y="1" width="13" height="11" rx="1" fill="#6f9fd8" stroke="#3d6ea8" /><rect x="3.5" y="3" width="9" height="7" fill="#e8f0fa" /></svg
+      >
+      <span>{a.name} ({a.count})</span>
+    </button>
+  {:else}
+    <p class="empty small">Select photos, then Add to Album in the tray.</p>
+  {/each}
+  <div class="cat">
+    <span>▾ Folders ({store.sortedFolders.length})</span>
     <span class="views">
       <button class:on={store.folderView === "year"} title="Flat list by year" onclick={() => store.setFolderView("year")}>☰</button>
       <button class:on={store.folderView === "tree"} title="Tree of folders on disk" onclick={() => store.setFolderView("tree")}>⊢</button>
+      <button class:on={store.timeline} title="Timeline: all photos by month (Ctrl+5)" onclick={() => store.toggleTimeline()}>◷</button>
     </span>
   </div>
   {#if store.folderView === "tree"}
@@ -149,11 +184,24 @@
       {#each g.folders as f (f.id)}{@render row(f, 17)}{/each}
     {/each}
   {/if}
-  {#if store.folders.length === 0}
+  {#if store.sortedFolders.length === 0}
     <p class="empty">{store.status || "No photos found yet."}</p>
     <button class="add" onclick={() => (store.folderManager = true)}>Choose folders…</button>
   {/if}
 </aside>
+
+{#if albumMenu}
+  {@const a = albumMenu.a}
+  <div class="menu" style:left="{albumMenu.x}px" style:top="{albumMenu.y}px" role="menu">
+    <button onclick={() => act(() => store.openAlbum(a.token))}>Open Album</button>
+    {#if store.picked().length && store.album?.token !== a.token}
+      <button onclick={() => act(() => store.addToAlbum(a.token))}>Add Selected Photos ({store.picked().length})</button>
+    {/if}
+    <hr />
+    <button onclick={() => act(() => store.albumProperties(a))}>Album Properties…</button>
+    <button onclick={() => act(() => store.deleteAlbum(a))}>Delete Album</button>
+  </div>
+{/if}
 
 {#if menu}
   {@const f = menu.f}
@@ -165,6 +213,7 @@
     <button onclick={() => act(() => store.moveFolder(f))}>Move Folder…</button>
     <button onclick={() => act(() => store.newFolder(f))}>New Folder Inside…</button>
     <button onclick={() => act(() => store.deleteFolder(f))}>Delete Folder</button>
+    <button onclick={() => act(() => store.hideFolder(f, !f.hidden))}>{f.hidden ? "Unhide Folder" : "Hide Folder"}</button>
     <hr />
     <div class="sub">Sort Photos By</div>
     {#each SORTS as [k, label]}
@@ -202,6 +251,8 @@
   .arrow { width: 16px; height: 18px; padding: 0; border: none; background: none; font-size: 10px; color: #777; flex: none; }
   .arrow.hide { visibility: hidden; }
   .empty { color: var(--muted); padding: 8px 12px; }
+  .hiddenf { font-style: italic; opacity: 0.7; }
+  .empty.small { font-size: 12px; padding: 4px 12px 8px; margin: 0; }
   .add { margin: 0 12px; }
   .menu { position: fixed; z-index: 45; background: #fff; border: 1px solid #999; box-shadow: 2px 3px 10px #0003; padding: 3px 0; min-width: 210px; display: flex; flex-direction: column; }
   .menu button { border: none; border-radius: 0; background: none; text-align: left; padding: 4px 14px; font-weight: 400; font-size: 13px; }

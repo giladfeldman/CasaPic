@@ -55,6 +55,24 @@ pub fn save(folder: &Path, file_name: &str, orientation: i64, ops: &[Op]) -> Res
     Ok(())
 }
 
+/// Renames a file, waiting briefly while another program has it open. Windows refuses to
+/// replace or move a file that a reader opened without sharing deletion (its own image decoder
+/// making a thumbnail, a virus scanner, the search indexer); such readers let go within
+/// moments, so this tries again for up to about 3 seconds before giving up.
+pub fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut wait = 25;
+    loop {
+        match std::fs::rename(from, to) {
+            // 5 = access denied (the target is held), 32 = in use (the source is held)
+            Err(e) if matches!(e.raw_os_error(), Some(5) | Some(32)) && wait <= 800 => {
+                std::thread::sleep(std::time::Duration::from_millis(wait));
+                wait *= 2;
+            }
+            r => return r,
+        }
+    }
+}
+
 /// Replaces the photo file with `bytes`, keeping the untouched original first (only the first
 /// time: a kept original is never replaced). Returns whether this was the first change.
 /// Used by Save and by Adjust Date and Time.
@@ -69,14 +87,14 @@ pub fn install(folder: &Path, file_name: &str, bytes: &[u8]) -> Result<bool> {
         let dir = originals_dir(folder);
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         sidecar::set_hidden(&dir, true);
-        if let Err(e) = std::fs::rename(&photo, &backup) {
+        if let Err(e) = rename_retrying(&photo, &backup) {
             let _ = std::fs::remove_file(&tmp);
             return Err(e).with_context(|| format!("move the original to {}", backup.display()));
         }
     }
-    if let Err(e) = std::fs::rename(&tmp, &photo) {
+    if let Err(e) = rename_retrying(&tmp, &photo) {
         if first {
-            let _ = std::fs::rename(&backup, &photo);
+            let _ = rename_retrying(&backup, &photo);
         }
         let _ = std::fs::remove_file(&tmp);
         return Err(e).with_context(|| format!("replace {}", photo.display()));
@@ -93,7 +111,7 @@ pub fn revert(folder: &Path, file_name: &str) -> Result<bool> {
         return Ok(false);
     }
     // rename replaces the saved file in one step on the same disk
-    std::fs::rename(&backup, &photo).with_context(|| format!("restore {}", photo.display()))?;
+    rename_retrying(&backup, &photo).with_context(|| format!("restore {}", photo.display()))?;
     let dir = originals_dir(folder);
     sidecar::update(&dir, file_name, |e| e.filters.clear())?;
     sidecar::update(folder, file_name, |e| e.filters.clear())?;
@@ -107,6 +125,28 @@ pub fn revert(folder: &Path, file_name: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_waits_for_a_reader_that_holds_the_photo_open() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().to_path_buf();
+        let original = photo(&dir, "a.jpg");
+        install(&dir, "a.jpg", b"first").unwrap();
+        // a reader that does not share deletion, as Windows' image decoder opens files
+        let held = std::fs::OpenOptions::new().read(true).share_mode(1 /* FILE_SHARE_READ */).open(dir.join("a.jpg")).unwrap();
+        std::fs::write(dir.join("b.jpg"), b"b").unwrap();
+        assert_eq!(std::fs::rename(dir.join("a.jpg"), dir.join("x.jpg")).unwrap_err().raw_os_error(), Some(32), "the lock is real (source)");
+        assert_eq!(std::fs::rename(dir.join("b.jpg"), dir.join("a.jpg")).unwrap_err().raw_os_error(), Some(5), "the lock is real (target)");
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        install(&dir, "a.jpg", b"second").unwrap();
+        t.join().unwrap();
+        assert_eq!(std::fs::read(dir.join("a.jpg")).unwrap(), b"second");
+        assert_eq!(std::fs::read(backup_of(&dir, "a.jpg")).unwrap(), original);
+    }
 
     fn photo(dir: &Path, name: &str) -> Vec<u8> {
         let img = image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([(x * 4) as u8, (y * 5) as u8, 90]));

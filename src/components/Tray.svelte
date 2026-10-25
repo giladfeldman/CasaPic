@@ -14,7 +14,12 @@
     else api.photo(id).then((x) => (p = x), () => (p = null));
   });
 
-  const picked = $derived(store.order.filter((id) => store.selection.has(id)));
+  // the tray shows the selection and the held photos (Hold keeps them while you browse)
+  const picked = $derived.by(() => {
+    void store.selection;
+    void store.held;
+    return store.selection.size || store.held.size ? store.picked() : [];
+  });
   const position = $derived.by(() => {
     if (store.focus == null) return "";
     const f = store.folderOf.get(store.focus);
@@ -22,6 +27,7 @@
     return `(${f.photos.findIndex((x) => x[0] === store.focus) + 1} of ${f.photos.length})`;
   });
   const allStarred = $derived(picked.length > 0 && picked.every((id) => store.starred.has(id)));
+  const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
 </script>
 
 <div class="status">
@@ -32,17 +38,19 @@
       >{fmtSize(p.size)}</span
     ><span>{position}</span>
   {:else}
-    <span>{store.order.length} pictures in {store.folders.length} folders</span>
+    <span>{store.album ? `${n(store.order.length, "picture")} in this album` : `${n(store.order.length, "picture")} in ${n(store.folders.length, store.timeline ? "month" : "folder")}`}</span>
   {/if}
 </div>
 <div class="tray">
   <div class="sel">
     <div class="thumbs">
       {#each picked.slice(0, 30) as id (id)}
-        {#if (store.thumbV[id] ?? 0) > 0}<img src={thumbUrl(id, store.thumbV[id])} alt="" />{/if}
+        {#if (store.thumbV[id] ?? 0) > 0}<span class="t"><img src={thumbUrl(id, store.thumbV[id])} alt="" />{#if store.held.has(id)}<span class="pin" title="Held">📌</span>{/if}</span>{/if}
       {/each}
     </div>
-    <span class="lbl">{picked.length ? `${picked.length} selected` : "Selection"}</span>
+    <span class="lbl">{picked.length ? store.held.size ? `${n(picked.length, "photo")} in the tray, ${store.held.size} held` : `${picked.length} selected` : "Selection"}</span>
+    <button class="hold" class:on={store.held.size > 0} title="Hold: keep these photos in the tray while you look elsewhere (Ctrl+H)" disabled={!picked.length}
+      onclick={() => store.toggleHold()}>📌</button>
     <button class="clear" title="Clear selection (Ctrl+D)" disabled={!picked.length} onclick={() => store.clearSelection()}>✕</button>
   </div>
   <div class="tools">
@@ -51,6 +59,9 @@
     >
     <button title="Rotate counterclockwise (Ctrl+Shift+R)" disabled={!picked.length} onclick={() => store.rotate(-1, picked)}><span class="ico">↺</span></button>
     <button title="Rotate clockwise (Ctrl+R)" disabled={!picked.length} onclick={() => store.rotate(1, picked)}><span class="ico">↻</span></button>
+    <button class="big" title="Add the selected pictures to an album" disabled={!picked.length}
+      onclick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); store.albumPicker = { x: r.left, y: r.top - 8, ids: picked }; }}
+      >Add to Album ▴</button>
     <button class="big" title="Export Picture to Folder (Ctrl+Shift+S)" disabled={!picked.length} onclick={onexport}>Export</button>
   </div>
   {#if store.view === "library"}
@@ -70,6 +81,10 @@
   .thumbs img { height: 56px; box-shadow: 1px 1px 3px #0005; }
   .lbl { color: #999; white-space: nowrap; }
   .clear { padding: 1px 6px; color: #c00; }
+  .hold { padding: 1px 5px; filter: grayscale(1); opacity: 0.7; }
+  .hold.on { filter: none; opacity: 1; background: #fff3c4; }
+  .t { position: relative; display: block; line-height: 0; }
+  .pin { position: absolute; right: -2px; top: -4px; font-size: 12px; line-height: 1; }
   .tools { display: flex; gap: 6px; align-items: center; }
   .ico { font-size: 17px; line-height: 1; color: #456; }
   .ico.on { color: #f0b400; }

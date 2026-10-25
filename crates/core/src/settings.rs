@@ -60,11 +60,14 @@ pub struct Settings {
     /// false until the first-launch Folder Manager has been closed
     pub folders_confirmed: bool,
     pub options: Options,
+    /// CasaPic's list of albums (as Picasa keeps its own); each folder holding a member also
+    /// carries a copy in its `.casapic.ini`, so albums travel with the photos
+    pub albums: Vec<crate::albums::Album>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { folders: Vec::new(), folders_confirmed: false, options: Options::default() }
+        Settings { folders: Vec::new(), folders_confirmed: false, options: Options::default(), albums: Vec::new() }
     }
 }
 

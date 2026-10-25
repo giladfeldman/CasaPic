@@ -13,6 +13,7 @@
   let height = $state(600);
   let scrollTop = $state(0);
   let menu = $state<{ x: number; y: number } | null>(null);
+  let lastMenu = { x: 0, y: 0 };
   /** the folder whose description is being typed, and the text so far */
   let editing = $state<{ id: number; text: string } | null>(null);
 
@@ -33,7 +34,10 @@
     editing = null;
     if (text === f.description) return;
     try {
-      await api.setFolderDescription(f.path, text);
+      // an open album's description is the album's own (Album Properties)
+      const a = f.id === -1 ? store.albums.find((x) => x.token === store.album?.token) : undefined;
+      if (a) await api.albumEdit({ token: a.token, name: a.name, date: a.date, location: a.location, description: text });
+      else await api.setFolderDescription(f.path, text);
     } catch (e) {
       store.message = String(e);
     }
@@ -63,7 +67,7 @@
 
   const visible = $derived.by(() => {
     const lo = scrollTop - OVERSCAN, hi = scrollTop + height + OVERSCAN;
-    const out: { b: Block; cells: { id: number; star: number; x: number; y: number }[] }[] = [];
+    const out: { b: Block; cells: { id: number; star: number; hidden: number; x: number; y: number }[] }[] = [];
     for (const b of blocks) {
       if (b.top + b.height < lo || b.top > hi) continue;
       const cells = [];
@@ -74,7 +78,7 @@
           const i = r * cols + c;
           const p = b.folder.photos[i];
           if (!p) break;
-          cells.push({ id: p[0], star: p[1], x: PAD + c * (size + GAPX), y: b.top + HEADER + r * rowH });
+          cells.push({ id: p[0], star: p[1], hidden: p[3], x: PAD + c * (size + GAPX), y: b.top + HEADER + r * rowH });
         }
       }
       out.push({ b, cells });
@@ -145,7 +149,7 @@
     menu = { x: e.clientX, y: e.clientY };
   }
 
-  const menuItems: [string, string, () => unknown][] = [
+  const menuItems: [string, string, () => unknown][] = $derived([
     ["View and Edit", "Ctrl+3", () => onopen(store.picked()[0])],
     ["Rotate Clockwise", "Ctrl+R", () => store.rotate(1)],
     ["Rotate Counterclockwise", "Ctrl+Shift+R", () => store.rotate(-1)],
@@ -154,15 +158,25 @@
     ["Delete from Disk", "Del", () => store.deletePicked()],
     ["Cut", "Ctrl+X", () => store.cutOrCopy(true)],
     ["Copy", "Ctrl+C", () => store.cutOrCopy(false)],
-    ["Move to New Folder…", "", () => store.moveToNewFolder()],
-    ["Split Folder Here…", "", () => store.splitFolderHere()],
+    ...(store.album
+      ? ([["Remove from Album", "", () => store.removeFromAlbum()]] as [string, string, () => unknown][])
+      : store.timeline
+      ? []
+      : ([
+          ["Move to New Folder…", "", () => store.moveToNewFolder()],
+          ["Split Folder Here…", "", () => store.splitFolderHere()],
+        ] as [string, string, () => unknown][])),
+    ["Add to Album…", "", () => (store.albumPicker = { x: lastMenu.x, y: lastMenu.y, ids: store.picked() })],
+    ["Tags", "Ctrl+T", () => { if (!store.showTags) store.toggleTags(); }],
+    store.picked().every((id) => store.hiddenIds.has(id)) ? ["Unhide", "", () => store.hidePicked(false)] : ["Hide", "", () => store.hidePicked(true)],
+    ["Hold in the Tray", "Ctrl+H", () => store.toggleHold()],
     ["Save a Copy", "", () => store.saveCopy()],
     ["Adjust Date and Time…", "", () => (store.dateFor = store.picked())],
     ["Open in an Editor", "Ctrl+Shift+O", () => store.openWith("editor")],
     ["Export Picture to Folder…", "Ctrl+Shift+S", () => (store.exportFor = store.picked())],
     ["Locate on Disk", "Ctrl+Enter", () => api.locate(store.picked()[0])],
     ["Properties", "Alt+Enter", () => { if (!store.showProperties) store.toggleProperties(); }],
-  ];
+  ]);
 </script>
 
 <svelte:window onclick={() => (menu = null)} />
@@ -171,13 +185,25 @@
   <div class="space" style:height="{total}px">
     {#each visible as { b, cells } (b.folder.id)}
       <div class="head" style:top="{b.top}px">
-        <svg viewBox="0 0 16 13" width="34" height="28" aria-hidden="true"
-          ><path d="M1 2h5l1.5 1.5H15v8.5H1z" fill="#f1c35c" stroke="#c8962e" stroke-width="0.6" /></svg
-        >
+        {#if b.folder.id < -1}
+          <svg viewBox="0 0 16 13" width="34" height="28" aria-hidden="true"
+            ><rect x="1.5" y="1.5" width="13" height="11" rx="1" fill="#fff" stroke="#3d6ea8" stroke-width="0.6" /><rect x="1.5" y="1.5" width="13" height="3" fill="#6f9fd8" /><path d="M4 7h2M7 7h2M10 7h2M4 9.5h2M7 9.5h2" stroke="#3d6ea8" stroke-width="0.8" /></svg
+          >
+        {:else if b.folder.id === -1}
+          <svg viewBox="0 0 16 13" width="34" height="28" aria-hidden="true"
+            ><rect x="1.5" y="1" width="13" height="11" rx="1" fill="#6f9fd8" stroke="#3d6ea8" stroke-width="0.6" /><rect x="3.5" y="3" width="9" height="7" fill="#e8f0fa" /></svg
+          >
+        {:else}
+          <svg viewBox="0 0 16 13" width="34" height="28" aria-hidden="true"
+            ><path d="M1 2h5l1.5 1.5H15v8.5H1z" fill="#f1c35c" stroke="#c8962e" stroke-width="0.6" /></svg
+          >
+        {/if}
         <div>
           <div class="title georgia">{b.folder.name}</div>
-          <div class="date">{fmtDay(b.folder.first ?? b.folder.date)} · {b.folder.photos.length} pictures</div>
-          {#if editing?.id === b.folder.id}
+          <div class="date">{fmtDay(b.folder.first ?? b.folder.date)} · {b.folder.photos.length} picture{b.folder.photos.length === 1 ? "" : "s"}</div>
+          {#if b.folder.id < -1}
+            <!-- a month of the timeline: no description -->
+          {:else if editing?.id === b.folder.id}
             <input class="desc-in" bind:value={editing.text} use:focusEnd placeholder="Add a description"
               onblur={() => saveDescription(b.folder)}
               onkeydown={(e) => { e.stopPropagation(); if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") editing = null; }} />
@@ -190,7 +216,8 @@
       {#each cells as c (c.id)}
         <div
           class="cell"
-          class:sel={store.selection.has(c.id)}
+          class:sel={store.selection.has(c.id) || store.held.has(c.id)}
+          class:hid={c.hidden}
           style:left="{c.x}px"
           style:top="{c.y}px"
           style:width="{size}px"
@@ -212,6 +239,7 @@
               <span class="ph" style:width="{size * 0.75}px" style:height="{size * 0.56}px"></span>
             {/if}
             {#if c.star}<span class="star" title="Starred">★</span>{/if}
+            {#if c.hidden}<span class="hidmark" title="Hidden (Picture > Unhide shows it always)">hidden</span>{/if}
           </span>
         </div>
       {/each}
@@ -222,7 +250,7 @@
 {#if menu}
   <div class="ctx" style:left="{menu.x}px" style:top="{menu.y}px" role="menu">
     {#each menuItems as [label, keys, run]}
-      <button role="menuitem" onclick={() => { menu = null; run(); }}><span>{label}</span><span class="k">{keys}</span></button>
+      <button role="menuitem" onclick={() => { lastMenu = menu!; menu = null; run(); }}><span>{label}</span><span class="k">{keys}</span></button>
     {/each}
   </div>
 {/if}
@@ -242,6 +270,8 @@
   .frame { position: relative; display: block; line-height: 0; }
   .cell img { display: block; box-shadow: 1px 2px 5px #0006; }
   .cell.sel img, .cell.sel .ph { outline: 3px solid var(--thumb-sel); box-shadow: inset 0 0 0 1px #fff, 1px 2px 5px #0006; outline-offset: 1px; }
+  .cell.hid img { opacity: 0.45; }
+  .hidmark { position: absolute; right: 3px; bottom: 3px; background: #0008; color: #fff; font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 2px; }
   .ph { display: block; background: linear-gradient(135deg, #e9e9e9, #d6d6d6); }
   .star { position: absolute; left: 3px; bottom: 1px; color: #f6c200; font-size: 18px; text-shadow: 0 0 2px #000, 0 0 1px #000; }
   .ctx { position: fixed; z-index: 45; background: #fff; border: 1px solid #999; box-shadow: 2px 3px 10px #0003; padding: 3px 0; min-width: 260px; }

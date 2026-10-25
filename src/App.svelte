@@ -14,10 +14,17 @@
   import Ask from "./components/Ask.svelte";
   import OptionsDialog from "./components/OptionsDialog.svelte";
   import DateDialog from "./components/DateDialog.svelte";
+  import AlbumPicker from "./components/AlbumPicker.svelte";
+  import AlbumDialog from "./components/AlbumDialog.svelte";
+  import TagsPanel from "./components/TagsPanel.svelte";
+  import FilterBar from "./components/FilterBar.svelte";
+  import PicasaImport from "./components/PicasaImport.svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import type { FolderSort } from "./lib/store.svelte";
 
   let grid: Grid | undefined = $state();
+  let filter: FilterBar | undefined = $state();
+  let picasaOpen = $state(false);
   /** the Folder Manager opened by itself on the very first launch (choice 4a) */
   let firstRun = $state(false);
 
@@ -102,6 +109,7 @@
       label: "File",
       items: [
         { label: "Add Folder to CasaPic…", keys: "Ctrl+O", run: addFolder },
+        { label: "New Album…", run: () => store.newAlbum([]) },
         "-",
         { label: "Save a Copy", run: () => store.saveCopy(), enabled: store.picked().length === 1 },
         { label: "Save As…", run: () => store.saveAs(), enabled: store.picked().length === 1 },
@@ -129,6 +137,9 @@
         { label: "Select Starred", run: () => store.selectStarred() },
         { label: "Invert Selection", keys: "Ctrl+I", run: () => store.invertSelection() },
         { label: "Clear Selection", keys: "Ctrl+D", run: () => store.clearSelection() },
+        { label: "Hold in the Tray", keys: "Ctrl+H", run: () => store.toggleHold(), enabled: has(), checked: store.held.size > 0 },
+        "-",
+        { label: "Find…", keys: "Ctrl+F", run: () => { store.view = "library"; setTimeout(() => filter?.focus()); } },
       ],
     },
     {
@@ -141,6 +152,9 @@
         { label: "Normal Thumbnails", keys: "Ctrl+2", run: () => store.setThumbSize(140) },
         "-",
         { label: "Properties", keys: "Alt+Enter", run: () => store.toggleProperties(), checked: store.showProperties },
+        { label: "Tags", keys: "Ctrl+T", run: () => store.toggleTags(), checked: store.showTags },
+        { label: "Timeline", keys: "Ctrl+5", run: () => store.toggleTimeline(), checked: store.timeline },
+        { label: "Hidden Pictures", run: () => store.toggleShowHidden(), checked: store.showHidden },
         "-",
         { label: "Folder View: Flat List", run: () => store.setFolderView("year"), checked: store.folderView === "year" },
         { label: "Folder View: Tree", run: () => store.setFolderView("tree"), checked: store.folderView === "tree" },
@@ -157,6 +171,11 @@
         { label: "Star / Unstar", run: () => store.toggleStar(), enabled: has() },
         { label: "Adjust Date and Time…", run: () => (store.dateFor = store.picked()), enabled: has() },
         "-",
+        { label: "Add to Album…", run: () => (store.albumPicker = { x: 220, y: 60, ids: store.picked() }), enabled: has() },
+        { label: "Remove from Album", run: () => store.removeFromAlbum(), enabled: has() && !!store.album },
+        { label: "Hide", run: () => store.hidePicked(true), enabled: has() && !store.picked().every((id) => store.hiddenIds.has(id)) },
+        { label: "Unhide", run: () => store.hidePicked(false), enabled: has() && store.picked().some((id) => store.hiddenIds.has(id)) },
+        "-",
         { label: "Copy All Effects", keys: "Ctrl+Shift+C", run: () => store.copyEffects(), enabled: store.picked().length === 1 },
         { label: "Paste All Effects", keys: "Ctrl+Shift+V", run: () => store.pasteEffects(), enabled: has() && !!store.effectsClip },
         "-",
@@ -167,6 +186,7 @@
       label: "Tools",
       items: [
         { label: "Folder Manager…", run: () => (store.folderManager = true) },
+        { label: "Import Picasa Settings…", run: () => (picasaOpen = true) },
         { label: "Options…", run: () => (store.optionsOpen = true) },
       ],
     },
@@ -177,7 +197,7 @@
           label: "About CasaPic",
           run: () =>
             (store.message =
-              "CasaPic 0.1 — a personal photo organizer in the spirit of Picasa 3. Stars and edits are kept beside your photos in a hidden .casapic.ini file; a photo file changes only when you Save it, and its untouched original is then kept in a hidden .casapicoriginals folder for Revert."),
+              "CasaPic 0.1 — a personal photo organizer in the spirit of Picasa 3. Stars, edits and albums are kept beside your photos in a hidden .casapic.ini file. A photo file changes only when you Save it, adjust its date, or give it tags or a caption (written inside the file, as Picasa does); its untouched original is then kept in a hidden .casapicoriginals folder for Revert."),
         },
       ],
     },
@@ -191,6 +211,10 @@
     if (ctrl && k === "a") store.selectAll();
     else if (ctrl && k === "d") store.clearSelection();
     else if (ctrl && k === "i") store.invertSelection();
+    else if (ctrl && k === "t") store.toggleTags();
+    else if (ctrl && k === "f") filter?.focus();
+    else if (ctrl && k === "5") store.toggleTimeline();
+    else if (ctrl && k === "h") store.toggleHold();
     else if (ctrl && k === "r") store.rotate(e.shiftKey ? -1 : 1);
     else if (ctrl && e.shiftKey && k === "c") store.copyEffects();
     else if (ctrl && e.shiftKey && k === "v") store.pasteEffects();
@@ -221,14 +245,21 @@
   {#if store.view === "library"}
     <div class="main">
       <FolderList onpick={(id) => grid?.scrollToFolder(id)} />
-      <Grid bind:this={grid} onopen={openEdit} />
+      <div class="center">
+        <FilterBar bind:this={filter} />
+        <Grid bind:this={grid} onopen={openEdit} />
+      </div>
       {#if store.showProperties}<Properties />{/if}
+      {#if store.showTags}<TagsPanel />{/if}
     </div>
   {:else}
     <div class="main"><EditView /></div>
   {/if}
   <Tray onexport={exportPicked} />
   {#if store.prompt || store.confirm}<Ask />{/if}
+  {#if store.albumPicker}<AlbumPicker />{/if}
+  {#if store.albumDialog}<AlbumDialog />{/if}
+  {#if picasaOpen}<PicasaImport onclose={() => (picasaOpen = false)} />{/if}
   {#if store.optionsOpen}<OptionsDialog onclose={() => (store.optionsOpen = false)} />{/if}
   {#if store.dateFor}<DateDialog ids={store.dateFor} onclose={() => (store.dateFor = null)} />{/if}
   {#if store.folderManager}
@@ -248,6 +279,7 @@
 <style>
   .app { display: flex; flex-direction: column; height: 100%; }
   .main { flex: 1; display: flex; min-height: 0; }
+  .center { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .scrim { position: fixed; inset: 0; background: #0004; display: grid; place-items: center; z-index: 50; }
   .msg { background: var(--chrome); border: 1px solid #999; padding: 16px 20px; max-width: 420px; box-shadow: 0 6px 24px #0005; text-align: right; }
   .msg p { text-align: left; margin: 0 0 14px; line-height: 1.45; }

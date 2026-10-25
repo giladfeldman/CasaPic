@@ -47,7 +47,7 @@ fn place(src: &Path, dst: &Path, keep_source: bool) -> Result<()> {
         std::fs::copy(src, dst).with_context(|| format!("copy {} to {}", src.display(), dst.display()))?;
         return Ok(());
     }
-    if std::fs::rename(src, dst).is_ok() {
+    if crate::save::rename_retrying(src, dst).is_ok() {
         return Ok(());
     }
     std::fs::copy(src, dst).with_context(|| format!("copy {} to {}", src.display(), dst.display()))?;
@@ -82,10 +82,21 @@ fn carry(from_dir: &Path, name: &str, to_dir: &Path, to_name: &str, keep_source:
         }
     }
 
-    let entry = sidecar::read(from_dir).remove(name).unwrap_or_default();
-    sidecar::update(to_dir, to_name, |e| *e = entry)?;
+    // the photo's entry, and a copy of each album it is in (Picasa keeps one per folder)
+    let from_all = sidecar::read(from_dir);
+    let entry = from_all.get(name).cloned().unwrap_or_default();
+    let sections = crate::albums::sections_for(&from_all, &entry);
+    sidecar::update_all(to_dir, |m| {
+        for (k, e) in sections {
+            m.entry(k).or_insert(e);
+        }
+        m.insert(to_name.to_string(), entry);
+    })?;
     if !keep_source {
-        sidecar::update(from_dir, name, |e| *e = Default::default())?;
+        sidecar::update_all(from_dir, |m| {
+            m.remove(name);
+            crate::albums::tidy(m);
+        })?;
     }
     Ok(())
 }
@@ -150,7 +161,10 @@ pub fn delete_photo(dir: &Path, name: &str) -> Result<()> {
         sidecar::update(&dir.join(ORIGINALS), name, |e| *e = Default::default())?;
         remove_if_empty(&dir.join(ORIGINALS));
     }
-    sidecar::update(dir, name, |e| *e = Default::default())?;
+    sidecar::update_all(dir, |m| {
+        m.remove(name);
+        crate::albums::tidy(m);
+    })?;
     Ok(())
 }
 

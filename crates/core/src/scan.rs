@@ -142,6 +142,8 @@ pub fn scan_folder(db: &Db, dir: &Path, root: &str) -> Result<Option<(usize, Vec
                     taken: m.taken,
                     orientation: m.orientation.max(1),
                     camera: m.camera,
+                    tags: m.tags,
+                    caption: m.caption,
                 },
                 preview,
             )
@@ -234,5 +236,35 @@ mod tests {
         sync(&db, &s, false).unwrap();
         set_file_types(&[]);
         assert_eq!(indexed(&db), ["c"], "Elsewhere holds only a PNG");
+    }
+
+    #[test]
+    fn tags_captions_albums_and_hidden_reach_the_index() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("Trip");
+        photo(&dir, "a.jpg");
+        photo(&dir, "b.jpg");
+        let f = std::fs::read(dir.join("a.jpg")).unwrap();
+        let l = crate::tags::Labels { tags: vec!["beach".into(), "Family".into()], caption: "At the lake".into() };
+        std::fs::write(dir.join("a.jpg"), crate::tags::write(&f, &l).unwrap()).unwrap();
+        let hol = crate::albums::Album { token: crate::albums::new_token(), name: "Holiday".into(), ..Default::default() };
+        crate::albums::add(&hol, &[(dir.clone(), "a.jpg".into()), (dir.clone(), "b.jpg".into())]).unwrap();
+        crate::sidecar::update(&dir, "b.jpg", |e| e.set("hidden", "yes")).unwrap();
+        crate::sidecar::update(&dir, crate::sidecar::FOLDER_SECTION, |e| e.set("P2category", "Hidden Folders")).unwrap();
+
+        let db = Db::open_in_memory().unwrap();
+        scan_root(&db, d.path()).unwrap();
+        let folder = &db.folders().unwrap()[0];
+        assert!(folder.hidden);
+        let ps = db.photos(folder.id).unwrap();
+        let a = ps.iter().find(|p| p.name == "a.jpg").unwrap();
+        let b = ps.iter().find(|p| p.name == "b.jpg").unwrap();
+        assert_eq!((a.tags.clone(), a.caption.as_str()), (l.tags.clone(), "At the lake"));
+        assert_eq!(a.albums, [hol.token.clone()]);
+        assert!(b.hidden && !a.hidden);
+        let albums = db.albums().unwrap();
+        assert_eq!((albums.len(), albums[0].count, albums[0].album.name.as_str()), (1, 2, "Holiday"));
+        assert_eq!(db.album_photos(&hol.token).unwrap().len(), 2);
+        assert_eq!(db.all_tags().unwrap(), [("beach".to_string(), 1), ("Family".to_string(), 1)]);
     }
 }

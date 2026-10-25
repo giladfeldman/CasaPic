@@ -12,7 +12,7 @@ use serde::Serialize;
 
 /// Bumped whenever the tables change. The database is only a cache of the folders and their
 /// sidecars, so an older one is simply dropped and rebuilt by the next scan.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS folders (
     root      TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     sort      TEXT NOT NULL DEFAULT '',
+    hidden    INTEGER NOT NULL DEFAULT 0,
     date_min  INTEGER,
     date_max  INTEGER,
     count     INTEGER NOT NULL DEFAULT 0
@@ -43,7 +44,18 @@ CREATE TABLE IF NOT EXISTS photos (
     star        INTEGER NOT NULL DEFAULT 0,
     recipe      TEXT NOT NULL DEFAULT '',
     thumb_level INTEGER NOT NULL DEFAULT 0,
+    tags        TEXT NOT NULL DEFAULT '',
+    caption     TEXT NOT NULL DEFAULT '',
+    albums      TEXT NOT NULL DEFAULT '',
+    hidden      INTEGER NOT NULL DEFAULT 0,
     UNIQUE(folder_id, name)
+);
+CREATE TABLE IF NOT EXISTS albums (
+    token       TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    date        TEXT NOT NULL DEFAULT '',
+    location    TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS photos_folder ON photos(folder_id, taken, name);
 CREATE TABLE IF NOT EXISTS thumbs (
@@ -63,6 +75,8 @@ pub struct Folder {
     pub description: String,
     /// photo order chosen with Folder > Sort By: "", "name", "size" ("date" = ""), "-" = reversed
     pub sort: String,
+    /// Folder > Hide (Picasa's `P2category=Hidden Folders`)
+    pub hidden: bool,
     pub date_min: Option<i64>,
     pub date_max: Option<i64>,
     pub count: i64,
@@ -83,6 +97,13 @@ pub struct Photo {
     pub star: bool,
     pub recipe: String,
     pub thumb_level: i64,
+    /// tags (keywords) and caption, as written inside the photo file
+    pub tags: Vec<String>,
+    pub caption: String,
+    /// album tokens, from the folder's sidecar
+    pub albums: Vec<String>,
+    /// Picture > Hide
+    pub hidden: bool,
 }
 
 /// What the scanner knows about one file, before it has an id.
@@ -96,6 +117,38 @@ pub struct PhotoInfo {
     pub taken: Option<i64>,
     pub orientation: i64,
     pub camera: Option<String>,
+    pub tags: Vec<String>,
+    pub caption: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AlbumRow {
+    #[serde(flatten)]
+    pub album: crate::albums::Album,
+    pub count: i64,
+    /// the first photo, shown as the album's picture
+    pub cover: Option<i64>,
+}
+
+/// Tags are kept in one column, one per line (a tag never holds a line break).
+pub fn join_tags(t: &[String]) -> String {
+    t.iter().map(|s| s.replace(['\r', '\n'], " ").trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
+}
+
+fn split_list(s: String, sep: char) -> Vec<String> {
+    s.split(sep).map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect()
+}
+
+pub struct SearchRow {
+    pub id: i64,
+    pub name: String,
+    pub folder: String,
+    pub tags: String,
+    pub caption: String,
+    pub albums: String,
+    pub star: bool,
+    /// date taken, or the file's date when the camera gave none
+    pub date: i64,
 }
 
 pub struct Db {
@@ -117,11 +170,15 @@ fn photo_from_row(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
         star: r.get::<_, i64>(10)? != 0,
         recipe: r.get(11)?,
         thumb_level: r.get(12)?,
+        tags: split_list(r.get(13)?, '\n'),
+        caption: r.get(14)?,
+        albums: split_list(r.get(15)?, ','),
+        hidden: r.get::<_, i64>(16)? != 0,
     })
 }
 
 const PHOTO_COLS: &str =
-    "id, folder_id, name, size, mtime, width, height, taken, orientation, camera, star, recipe, thumb_level";
+    "id, folder_id, name, size, mtime, width, height, taken, orientation, camera, star, recipe, thumb_level, tags, caption, albums, hidden";
 
 impl Db {
     pub fn open(path: &Path) -> Result<Db> {
@@ -131,7 +188,7 @@ impl Db {
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version != SCHEMA_VERSION {
-            conn.execute_batch("DROP TABLE IF EXISTS thumbs; DROP TABLE IF EXISTS photos; DROP TABLE IF EXISTS folders;")?;
+            conn.execute_batch("DROP TABLE IF EXISTS thumbs; DROP TABLE IF EXISTS photos; DROP TABLE IF EXISTS folders; DROP TABLE IF EXISTS albums;")?;
         }
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -155,7 +212,7 @@ impl Db {
     pub fn folders(&self) -> Result<Vec<Folder>> {
         let c = self.c();
         let mut st = c.prepare(
-            "SELECT id, path, name, root, date_min, date_max, count, description, sort FROM folders
+            "SELECT id, path, name, root, date_min, date_max, count, description, sort, hidden FROM folders
              WHERE count > 0 ORDER BY COALESCE(date_max, 0) DESC, name",
         )?;
         let rows = st.query_map([], |r| {
@@ -169,6 +226,7 @@ impl Db {
                 count: r.get(6)?,
                 description: r.get(7)?,
                 sort: r.get(8)?,
+                hidden: r.get::<_, i64>(9)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -233,13 +291,14 @@ impl Db {
         let mut ids = Vec::with_capacity(changed.len());
         for (p, preview) in changed {
             let id: i64 = tx.query_row(
-                "INSERT INTO photos(folder_id, name, size, mtime, width, height, taken, orientation, camera, thumb_level)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
+                "INSERT INTO photos(folder_id, name, size, mtime, width, height, taken, orientation, camera, thumb_level, tags, caption)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)
                  ON CONFLICT(folder_id, name) DO UPDATE SET size = excluded.size, mtime = excluded.mtime,
                    width = excluded.width, height = excluded.height, taken = excluded.taken,
-                   orientation = excluded.orientation, camera = excluded.camera, thumb_level = 0
+                   orientation = excluded.orientation, camera = excluded.camera, thumb_level = 0,
+                   tags = excluded.tags, caption = excluded.caption
                  RETURNING id",
-                params![fid, p.name, p.size, p.mtime, p.width, p.height, p.taken, p.orientation, p.camera],
+                params![fid, p.name, p.size, p.mtime, p.width, p.height, p.taken, p.orientation, p.camera, join_tags(&p.tags), p.caption],
                 |r| r.get(0),
             )?;
             tx.execute("DELETE FROM thumbs WHERE photo_id = ?1", [id])?;
@@ -268,12 +327,30 @@ impl Db {
         let folder = sidecar.get(crate::sidecar::FOLDER_SECTION);
         let description = folder.map(|e| e.get("description")).unwrap_or("");
         let sort = folder.map(|e| e.get("sortby")).unwrap_or("");
-        tx.execute("UPDATE folders SET description = ?1, sort = ?2 WHERE id = ?3", params![description, sort, fid])?;
-        tx.execute("UPDATE photos SET star = 0, recipe = '' WHERE folder_id = ?1", [fid])?;
+        let hidden = folder.is_some_and(|e| e.get("P2category") == "Hidden Folders");
+        tx.execute("UPDATE folders SET description = ?1, sort = ?2, hidden = ?3 WHERE id = ?4", params![description, sort, hidden as i64, fid])?;
+        tx.execute("UPDATE photos SET star = 0, recipe = '', albums = '', hidden = 0 WHERE folder_id = ?1", [fid])?;
         for (fname, e) in sidecar {
             tx.execute(
-                "UPDATE photos SET star = ?1, recipe = ?2 WHERE folder_id = ?3 AND name = ?4",
-                params![e.star as i64, e.filters, fid, fname],
+                "UPDATE photos SET star = ?1, recipe = ?2, albums = ?3, hidden = ?4 WHERE folder_id = ?5 AND name = ?6",
+                params![e.star as i64, e.filters, e.get("albums"), (e.get("hidden") == "yes") as i64, fid, fname],
+            )?;
+            // files that cannot hold tags inside (not JPEG) keep them here, in Picasa's
+            // `keywords=` and `caption=` lines
+            if !e.get("keywords").is_empty() || !e.get("caption").is_empty() {
+                let tags: Vec<String> = e.get("keywords").split(',').map(String::from).collect();
+                tx.execute(
+                    "UPDATE photos SET tags = ?1, caption = ?2 WHERE folder_id = ?3 AND name = ?4",
+                    params![join_tags(&tags), e.get("caption"), fid, fname],
+                )?;
+            }
+        }
+        for a in crate::albums::in_sidecar(sidecar) {
+            tx.execute(
+                "INSERT INTO albums(token, name, date, location, description) VALUES(?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(token) DO UPDATE SET name = excluded.name, date = excluded.date,
+                   location = excluded.location, description = excluded.description",
+                params![a.token, a.name, a.date, a.location, a.description],
             )?;
         }
         tx.execute(
@@ -405,6 +482,104 @@ impl Db {
     pub fn set_recipe(&self, id: i64, recipe: &str) -> Result<()> {
         self.c().execute("UPDATE photos SET recipe = ?2 WHERE id = ?1", params![id, recipe])?;
         Ok(())
+    }
+
+    /// Calls `f` for every photo with what search looks at.
+    pub fn for_each_search_row(&self, mut f: impl FnMut(SearchRow)) -> Result<()> {
+        let c = self.c();
+        let mut st = c.prepare(
+            "SELECT p.id, p.name, f.name, p.tags, p.caption, p.albums, p.star, COALESCE(p.taken, p.mtime)
+             FROM photos p JOIN folders f ON f.id = p.folder_id",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(SearchRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                folder: r.get(2)?,
+                tags: r.get(3)?,
+                caption: r.get(4)?,
+                albums: r.get(5)?,
+                star: r.get::<_, i64>(6)? != 0,
+                date: r.get(7)?,
+            })
+        })?;
+        for r in rows {
+            f(r?);
+        }
+        Ok(())
+    }
+
+    pub fn put_album(&self, a: &crate::albums::Album) -> Result<()> {
+        self.c().execute(
+            "INSERT INTO albums(token, name, date, location, description) VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(token) DO UPDATE SET name = excluded.name, date = excluded.date,
+               location = excluded.location, description = excluded.description",
+            params![a.token, a.name, a.date, a.location, a.description],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_album(&self, token: &str) -> Result<()> {
+        self.c().execute("DELETE FROM albums WHERE token = ?1", [token])?;
+        Ok(())
+    }
+
+    /// Every album, with how many photos it holds and its first photo, by name.
+    pub fn albums(&self) -> Result<Vec<AlbumRow>> {
+        let c = self.c();
+        let mut st = c.prepare(
+            "SELECT a.token, a.name, a.date, a.location, a.description,
+               (SELECT COUNT(*) FROM photos p WHERE instr(',' || p.albums || ',', ',' || a.token || ',') > 0),
+               (SELECT p.id FROM photos p WHERE instr(',' || p.albums || ',', ',' || a.token || ',') > 0
+                  ORDER BY COALESCE(p.taken, p.mtime), p.name LIMIT 1)
+             FROM albums a ORDER BY a.name COLLATE NOCASE",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(AlbumRow {
+                album: crate::albums::Album { token: r.get(0)?, name: r.get(1)?, date: r.get(2)?, location: r.get(3)?, description: r.get(4)? },
+                count: r.get(5)?,
+                cover: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The photos in an album, oldest first.
+    pub fn album_photos(&self, token: &str) -> Result<Vec<Photo>> {
+        let c = self.c();
+        let mut st = c.prepare(&format!(
+            "SELECT {PHOTO_COLS} FROM photos WHERE instr(',' || albums || ',', ',' || ?1 || ',') > 0
+             ORDER BY COALESCE(taken, mtime), name"
+        ))?;
+        let rows = st.query_map([token], photo_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The folders holding a member of the album (each carries a copy of its section).
+    pub fn album_folders(&self, token: &str) -> Result<Vec<std::path::PathBuf>> {
+        let c = self.c();
+        let mut st = c.prepare(
+            "SELECT DISTINCT f.path FROM photos p JOIN folders f ON f.id = p.folder_id
+             WHERE instr(',' || p.albums || ',', ',' || ?1 || ',') > 0",
+        )?;
+        let rows = st.query_map([token], |r| Ok(std::path::PathBuf::from(r.get::<_, String>(0)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Every tag in the library with how many photos carry it, most used first. The same tag
+    /// in other capitals counts as one, shown as first seen.
+    pub fn all_tags(&self) -> Result<Vec<(String, i64)>> {
+        let c = self.c();
+        let mut st = c.prepare("SELECT tags FROM photos WHERE tags != ''")?;
+        let mut n: std::collections::HashMap<String, (String, i64)> = Default::default();
+        for t in st.query_map([], |r| r.get::<_, String>(0))?.flatten() {
+            for tag in t.split('\n') {
+                n.entry(tag.to_lowercase()).or_insert((tag.to_string(), 0)).1 += 1;
+            }
+        }
+        let mut v: Vec<(String, i64)> = n.into_values().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        Ok(v)
     }
 
     pub fn counts(&self) -> Result<(i64, i64)> {

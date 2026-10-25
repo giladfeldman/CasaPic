@@ -6,6 +6,8 @@
 //! writes inside photo folders are `.casapic.ini` sidecars (stars and edit recipes); exports go
 //! to a folder the user chooses and never overwrite an existing file.
 
+pub mod albums;
+pub mod picasa;
 pub mod dates;
 pub mod db;
 pub mod effects;
@@ -16,7 +18,9 @@ pub mod recipe;
 pub mod render;
 pub mod files;
 pub mod save;
+pub mod tags;
 pub mod scan;
+pub mod search;
 pub mod settings;
 pub mod sidecar;
 pub mod thumbs;

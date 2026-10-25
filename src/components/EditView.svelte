@@ -13,6 +13,23 @@
   let tab = $state<Tab>("basic");
   let st = $state<EditState | null>(null);
   let photo = $state<Photo | null>(null);
+  /** the caption box under the photo ("Make a caption!"), written into the file on Enter */
+  let caption = $state("");
+  $effect(() => {
+    caption = photo?.caption ?? "";
+  });
+  async function saveCaption() {
+    const p = photo;
+    if (!p || caption.trim() === p.caption) return;
+    try {
+      await api.setCaption(p.id, caption);
+      p.caption = caption.trim();
+      store.flash("Caption saved in the photo");
+    } catch (e) {
+      store.message = String(e);
+      caption = p.caption;
+    }
+  }
   let error = $state<string | null>(null);
   let busy = $state(false);
   let fill = $state(0);
@@ -503,7 +520,7 @@
             <button disabled={!st?.edits.length || busy} onclick={save} title="Ctrl+S: write the edits into the photo file; the original is kept">Save</button>
             <button disabled={!st?.saved || busy} onclick={revertSaved} title="Put back the original photo as it was before the first Save">Revert</button>
           </div>
-          {#if st?.saved}<p class="hint">Saved. The original is kept in a hidden .casapicoriginals folder; Revert puts it back.</p>{/if}
+          {#if st?.saved}<p class="hint">This photo file has been changed (saved edits, a new date, or tags and caption). The untouched original is kept in a hidden .casapicoriginals folder; Revert puts it back and keeps the tags and caption.</p>{/if}
         {/if}
       {:else if mode === "crop"}
         <h3>Crop Photo</h3>
@@ -538,6 +555,7 @@
       </div>
     </aside>
 
+    <div class="picside">
     <div class="frame" bind:clientWidth={frameW} bind:clientHeight={frameH}>
       <div class="pic" style:width="{disp.w}px" style:height="{disp.h}px">
         <!-- Options > "single click on the photo goes back to the Library" -->
@@ -569,6 +587,12 @@
       </div>
       {#if busy}<div class="busy">Working…</div>{/if}
       {#if error}<div class="err">{error}</div>{/if}
+    </div>
+    <div class="caption">
+      <input bind:value={caption} placeholder="Make a caption!" maxlength="2000" title="The caption is written into the photo file, where Picasa and other programs read it"
+        onblur={saveCaption}
+        onkeydown={(e) => { e.stopPropagation(); if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") { caption = photo?.caption ?? ""; (e.target as HTMLInputElement).blur(); } }} />
+    </div>
     </div>
   </div>
 </div>
@@ -619,6 +643,10 @@
   .ih { font-weight: 600; margin-bottom: 4px; }
   .info canvas { width: 224px; height: 60px; background: #fafafa; border-bottom: 1px solid #ccc; }
   .cam, .edits { color: #666; font-size: 12px; margin-top: 3px; }
+  .picside { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .caption { flex: none; background: #d8d8d8; padding: 4px 0 8px; display: flex; justify-content: center; }
+  .caption input { width: min(600px, 80%); text-align: center; font-size: 14px; background: #ffffffcc; border: 1px solid #bbb; padding: 3px 6px; }
+  .caption input::placeholder { color: #777; font-style: italic; }
   .frame { flex: 1; position: relative; display: grid; place-items: center; background: #d8d8d8; min-width: 0; overflow: hidden; }
   .pic { position: relative; overflow: hidden; background: #3c3c3c; box-shadow: 0 0 0 6px #4a4a4a, 0 4px 14px #0006; }
   .pic canvas { display: block; transform-origin: 50% 50%; }

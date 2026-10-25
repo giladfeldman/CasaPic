@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 mod files;
 mod folders;
+mod organize;
 
 type Res<T> = Result<T, String>;
 
@@ -307,8 +308,16 @@ struct FolderOut {
     changed: i64,
     /// total size of its photos, for sorting folders by Size
     bytes: i64,
-    /// one row per photo: [id, starred (0/1), thumbnail level]
-    photos: Vec<[i64; 3]>,
+    /// Folder > Hide
+    hidden: bool,
+    /// one row per photo, see `photo_row`
+    photos: Vec<[i64; 5]>,
+}
+
+/// One photo as the grid needs it: [id, starred (0/1), thumbnail level, hidden (0/1), date
+/// (taken, or the file's date)].
+pub(crate) fn photo_row(p: &casapic_core::db::Photo) -> [i64; 5] {
+    [p.id, p.star as i64, p.thumb_level, p.hidden as i64, p.taken.unwrap_or(p.mtime)]
 }
 
 #[tauri::command(async)]
@@ -338,7 +347,8 @@ fn library(app: State<'_, App>) -> Res<Vec<FolderOut>> {
             bytes: photos.iter().map(|p| p.size).sum(),
             date: f.date_max,
             first: f.date_min,
-            photos: photos.iter().map(|p| [p.id, p.star as i64, p.thumb_level]).collect(),
+            hidden: f.hidden,
+            photos: photos.iter().map(photo_row).collect(),
         });
     }
     Ok(out)
@@ -359,6 +369,11 @@ struct PhotoOut {
     star: bool,
     /// names of the edits in its recipe, in order
     edits: Vec<String>,
+    tags: Vec<String>,
+    caption: String,
+    /// album tokens
+    albums: Vec<String>,
+    hidden: bool,
 }
 
 #[tauri::command(async)]
@@ -384,6 +399,10 @@ fn photo(app: State<'_, App>, id: i64) -> Res<PhotoOut> {
         camera: p.camera,
         star: p.star,
         edits: ops.iter().map(|o| o.label().to_string()).collect(),
+        tags: p.tags,
+        caption: p.caption,
+        albums: p.albums,
+        hidden: p.hidden,
     })
 }
 
@@ -876,7 +895,7 @@ fn edit_revert(app: State<'_, App>) -> Res<EditState> {
         let s = guard.as_ref().ok_or("no photo open")?;
         let path = app.db.photo_path(s.photo_id).map_err(err)?.ok_or("photo not found")?;
         let (folder, name) = folder_and_name(&path)?;
-        if !save::revert(folder, &name).map_err(err)? {
+        if !casapic_core::tags::revert_keeping_labels(folder, &name).map_err(err)? {
             return Err("this photo has no saved edit to revert".into());
         }
         app.db.set_recipe(s.photo_id, "").map_err(err)?;
@@ -1060,6 +1079,7 @@ pub fn run() {
             mark("setup");
             let h = a.handle().clone();
             let h2 = h.clone();
+            organize::load_albums(&h.state::<App>());
             std::thread::spawn(move || thumb_worker(h2, db, rx));
             std::thread::spawn(move || folders::sync_library(&h, false));
             Ok(())
@@ -1101,6 +1121,20 @@ pub fn run() {
             folders::set_folder_description,
             folders::set_folder_sort,
             folders::open_folder,
+            organize::albums_list,
+            organize::album_photos,
+            organize::album_create,
+            organize::album_add,
+            organize::album_remove,
+            organize::album_edit,
+            organize::album_delete,
+            organize::set_tags,
+            organize::set_caption,
+            organize::all_tags,
+            organize::search,
+            organize::set_hidden,
+            organize::picasa_import,
+            organize::set_folder_hidden,
             files::rename_photo,
             files::delete_photos,
             files::transfer_photos,

@@ -1,7 +1,8 @@
 // Every call the window makes to the Rust side (src-tauri/src/lib.rs), typed in one place.
 import { invoke } from "@tauri-apps/api/core";
 
-export type PhotoRow = [id: number, star: number, thumbLevel: number];
+/** one photo in the grid: date = taken, or the file's date (seconds, camera wall-clock) */
+export type PhotoRow = [id: number, star: number, thumbLevel: number, hidden: number, date: number];
 
 export interface Folder {
   id: number;
@@ -19,6 +20,8 @@ export interface Folder {
   changed: number;
   /** total bytes of its photos */
   bytes: number;
+  /** Folder > Hide */
+  hidden: boolean;
   photos: PhotoRow[];
 }
 
@@ -47,7 +50,15 @@ export interface Photo {
   camera: string | null;
   star: boolean;
   edits: string[];
+  tags: string[];
+  caption: string;
+  /** album tokens */
+  albums: string[];
+  hidden: boolean;
 }
+
+export interface Album { token: string; name: string; date: string; location: string; description: string }
+export interface AlbumRow extends Album { count: number; cover: number | null }
 
 export interface EditState {
   id: number;
@@ -99,6 +110,20 @@ export const api = {
   adjustDates: (ids: number[], shift: number) => invoke<number>("adjust_dates", { ids, shift }),
   clearThumbCache: () => invoke<number>("clear_thumb_cache"),
   openWith: (id: number, how: "editor" | "choose") => invoke<void>("open_with", { id, how }),
+  albums: () => invoke<AlbumRow[]>("albums_list"),
+  albumPhotos: (token: string) => invoke<PhotoRow[]>("album_photos", { token }),
+  albumCreate: (album: Album, ids: number[]) => invoke<string>("album_create", { album, ids }),
+  albumAdd: (token: string, ids: number[]) => invoke<number>("album_add", { token, ids }),
+  albumRemove: (token: string, ids: number[]) => invoke<number>("album_remove", { token, ids }),
+  albumEdit: (album: Album) => invoke<void>("album_edit", { album }),
+  albumDelete: (token: string) => invoke<void>("album_delete", { token }),
+  setTags: (ids: number[], add: string[], remove: string[]) => invoke<number>("set_tags", { ids, add, remove }),
+  setCaption: (id: number, text: string) => invoke<void>("set_caption", { id, text }),
+  allTags: () => invoke<[string, number][]>("all_tags"),
+  picasaImport: (apply: boolean) => invoke<PicasaSummary>("picasa_import", { apply }),
+  search: (query: { text: string; starred: boolean; from: number | null; to: number | null }) => invoke<number[]>("search", { query }),
+  setHidden: (ids: number[], hidden: boolean) => invoke<number>("set_hidden", { ids, hidden }),
+  setFolderHidden: (path: string, hidden: boolean) => invoke<void>("set_folder_hidden", { path, hidden }),
   editOpen: (id: number, edge: number) => invoke<EditState>("edit_open", { id, edge }),
   prepare: (ids: number[], edge: number) => invoke<void>("edit_prepare", { ids, edge }),
   editApply: (kind: Fix, params: number[] = []) => invoke<EditState>("edit_apply", { kind, params }),
@@ -153,4 +178,21 @@ export function fmtDay(secs: number | null): string {
 export function fmtSize(bytes: number): string {
   if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/** what Tools > Import Picasa Settings found (or brought over) */
+export interface PicasaSummary {
+  folders: number;
+  stars: number;
+  hidden_photos: number;
+  hidden_folders: number;
+  descriptions: number;
+  albums: string[];
+  album_photos: number;
+  edited: number;
+  kept_casapic_edits: number;
+  captions: number;
+  saved_in_picasa: number;
+  /** Picasa edits CasaPic cannot draw: name -> photos */
+  unknown: Record<string, number>;
 }

@@ -17,6 +17,8 @@ pub struct Meta {
     pub camera: Option<String>,
     /// the embedded preview JPEG, if any
     pub preview: Option<Vec<u8>>,
+    pub tags: Vec<String>,
+    pub caption: String,
 }
 
 pub fn read(path: &Path) -> std::io::Result<Meta> {
@@ -24,6 +26,8 @@ pub fn read(path: &Path) -> std::io::Result<Meta> {
     let mut buf = Vec::with_capacity(HEAD);
     f.by_ref().take(HEAD as u64).read_to_end(&mut buf)?;
     let mut m = from_bytes(&buf);
+    let labels = crate::tags::read(&buf);
+    (m.tags, m.caption) = (labels.tags, labels.caption);
     if m.width == 0 {
         if let Ok((w, h)) = crate::wic::dimensions(path) {
             m.width = w as i64;

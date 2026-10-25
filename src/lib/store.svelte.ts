@@ -1,6 +1,6 @@
 // Window-wide state shared by the views (Svelte 5 runes).
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { api, type Folder, type Options } from "./api";
+import { api, type Album, type AlbumRow, type Folder, type Options, type PhotoRow } from "./api";
 
 export type FolderSort = "date" | "changed" | "size" | "name";
 
@@ -11,8 +11,32 @@ class Store {
   folderView = $state<"year" | "tree">((localStorage.getItem("folderView") as "year" | "tree") ?? "year");
   folderSort = $state<FolderSort>((localStorage.getItem("folderSort") as FolderSort) ?? "date");
   folderReverse = $state(localStorage.getItem("folderReverse") === "1");
-  /** the folders in the order of the folder list (the grid follows it, as in Picasa) */
-  folders = $derived.by(() => {
+  /** every album, by name (left panel, Albums) */
+  albums = $state<AlbumRow[]>([]);
+  /** the album open in the grid instead of the folders, with its photos */
+  album = $state<{ token: string; photos: PhotoRow[] } | null>(null);
+  /** the open album as one grid section (id -1; it is not a folder on disk) */
+  albumSection = $derived.by((): Folder | null => {
+    const a = this.album && this.albums.find((x) => x.token === this.album!.token);
+    if (!a || !this.album) return null;
+    const day = a.date ? Date.parse(a.date) / 1000 : null;
+    return { id: -1, name: a.name, path: "", date: day, first: day, description: a.description, sort: "", root: "", changed: 0, bytes: 0, hidden: false, photos: this.album.photos };
+  });
+  /** bumped after every reload, so open panels read the photo again (tags, caption) */
+  metaV = $state(0);
+  /** View > Hidden Pictures: hidden photos and folders are shown (dimmed) */
+  showHidden = $state(localStorage.getItem("showHidden") === "1");
+  /** View > Timeline (Ctrl+5): every photo by month, across folders */
+  timeline = $state(false);
+  /** search (Ctrl+F) and its filters; `hits` holds the matching ids while one is active */
+  query = $state({ text: "", starred: false, from: "", to: "" });
+  hits = $state<Set<number> | null>(null);
+  /** photos held in the Photo Tray (Hold, Ctrl+H) while browsing elsewhere */
+  held = $state<Set<number>>(new Set());
+
+  /** the folders in the folder list's order (whether or not an album is open); hidden
+   *  folders only with View > Hidden Pictures */
+  sortedFolders = $derived.by(() => {
     const key: Record<FolderSort, (f: Folder) => number | string> = {
       date: (f) => -(f.date ?? 0),
       changed: (f) => -f.changed,
@@ -21,12 +45,44 @@ class Store {
     };
     // the tree is always in name order inside each branch: sort by full path
     const k = this.folderView === "tree" ? (f: Folder) => f.path.toLowerCase() : key[this.folderSort];
-    const out = [...this.allFolders].sort((a, b) => {
+    const out = this.allFolders.filter((f) => this.showHidden || !f.hidden).sort((a, b) => {
       const x = k(a), y = k(b);
       return x < y ? -1 : x > y ? 1 : a.name.localeCompare(b.name);
     });
     return this.folderReverse && this.folderView !== "tree" ? out.reverse() : out;
   });
+  /** the timeline: one section per month, newest first (ids below -1; not folders on disk) */
+  months = $derived.by((): Folder[] => {
+    const by = new Map<number, PhotoRow[]>();
+    for (const f of this.sortedFolders) for (const p of f.photos) {
+      const d = new Date(p[4] * 1000);
+      const k = d.getUTCFullYear() * 100 + d.getUTCMonth() + 1;
+      if (!by.has(k)) by.set(k, []);
+      by.get(k)!.push(p);
+    }
+    return [...by.entries()].sort((a, b) => b[0] - a[0]).map(([k, photos]) => {
+      photos.sort((a, b) => a[4] - b[4]);
+      const start = Date.UTC(Math.floor(k / 100), (k % 100) - 1, 1) / 1000;
+      const name = new Date(start * 1000).toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+      return { id: -(k + 10), name, path: "", date: start, first: start, description: "", sort: "", root: "", changed: 0, bytes: 0, hidden: false, photos };
+    });
+  });
+  /** what the grid shows: the open album, the timeline, or the folders; then without hidden
+   *  photos (unless shown) and narrowed to the search hits */
+  folders = $derived.by(() => {
+    const base = this.albumSection ? [this.albumSection] : this.timeline ? this.months : this.sortedFolders;
+    const hits = this.hits;
+    if (this.showHidden && !hits) return base;
+    const out: Folder[] = [];
+    for (const f of base) {
+      const photos = f.photos.filter((p) => (this.showHidden || !p[3]) && (!hits || hits.has(p[0])));
+      if (photos.length === f.photos.length) out.push(f);
+      else if (photos.length) out.push({ ...f, photos });
+    }
+    return out;
+  });
+  /** the grid shows sections that are not folders on disk (an album or the timeline) */
+  virtual = $derived(!!this.album || this.timeline);
   /** every photo id in display order (folders newest first, photos by date) */
   order = $derived(this.folders.flatMap((f) => f.photos.map((p) => p[0])));
   folderOf = $derived(new Map(this.folders.flatMap((f) => f.photos.map((p) => [p[0], f] as const))));
@@ -63,7 +119,19 @@ class Store {
       if (this.thumbV[p[0]] == null) this.thumbV[p[0]] = p[2];
     }
     this.allFolders = fresh;
+    this.albums = await api.albums();
+    if (this.album) {
+      const token = this.album.token;
+      if (this.albums.some((a) => a.token === token)) this.album = { token, photos: await api.albumPhotos(token) };
+      else this.album = null;
+    }
+    for (const p of this.album?.photos ?? []) if (this.thumbV[p[0]] == null) this.thumbV[p[0]] = p[2];
+    this.metaV++;
+    const shown = new Set(this.folders.flatMap((f) => f.photos.map((p) => p[0])));
+    for (const id of shown) known.add(id);
     this.selection = new Set([...this.selection].filter((id) => known.has(id)));
+    if ([...this.held].some((id) => !known.has(id))) this.held = new Set([...this.held].filter((id) => known.has(id)));
+    if (this.hits) this.runSearch();
     if (this.focus != null && !known.has(this.focus)) this.focus = null;
   }
 
@@ -94,6 +162,7 @@ class Store {
     this.selection = new Set(this.order);
   }
   clearSelection() {
+    this.held = new Set();
     this.selection = new Set();
   }
   invertSelection() {
@@ -105,8 +174,71 @@ class Store {
 
   /** the selection in display order, or the focused photo if nothing is selected */
   picked(): number[] {
-    const ids = this.order.filter((id) => this.selection.has(id));
-    return ids.length ? ids : this.focus != null ? [this.focus] : [];
+    const ids = this.order.filter((id) => this.selection.has(id) || this.held.has(id));
+    // held photos from folders not shown now come first, as they were picked first
+    const shown = new Set(ids);
+    const away = [...this.held].filter((id) => !shown.has(id));
+    const all = away.concat(ids);
+    return all.length ? all : this.focus != null ? [this.focus] : [];
+  }
+
+  /** Hold (Ctrl+H): keeps the selection in the tray while you browse; again releases it */
+  toggleHold() {
+    const sel = [...this.selection];
+    if (sel.length && !sel.every((id) => this.held.has(id))) this.held = new Set([...this.held, ...sel]);
+    else this.held = new Set();
+  }
+
+  // ---- search, timeline, hidden ----
+  private searchTimer: ReturnType<typeof setTimeout> | undefined;
+  private searchTicket = 0;
+  /** runs the search a moment after the last key, as Picasa filters while you type */
+  search(change: Partial<{ text: string; starred: boolean; from: string; to: string }> = {}) {
+    this.query = { ...this.query, ...change };
+    clearTimeout(this.searchTimer);
+    this.searchTimer = setTimeout(() => this.runSearch(), 150);
+  }
+  async runSearch() {
+    const q = this.query;
+    const day = (s: string) => (s ? Date.parse(`${s}T00:00:00Z`) / 1000 : null);
+    const active = q.text.trim() || q.starred || q.from || q.to;
+    const t = ++this.searchTicket;
+    if (!active) {
+      this.hits = null;
+      return;
+    }
+    try {
+      const ids = await api.search({ text: q.text, starred: q.starred, from: day(q.from), to: q.to ? day(q.to)! + 86400 : null });
+      if (t === this.searchTicket) this.hits = new Set(ids);
+    } catch (e) {
+      this.message = String(e);
+    }
+  }
+  clearSearch() {
+    this.query = { text: "", starred: false, from: "", to: "" };
+    this.hits = null;
+  }
+  toggleTimeline() {
+    this.timeline = !this.timeline;
+    if (this.timeline) this.album = null;
+  }
+  toggleShowHidden() {
+    this.showHidden = !this.showHidden;
+    localStorage.setItem("showHidden", this.showHidden ? "1" : "0");
+  }
+  hiddenIds = $derived(new Set(this.folders.flatMap((f) => f.photos.filter((p) => p[3]).map((p) => p[0]))));
+  async hidePicked(hide: boolean, ids = this.picked()) {
+    if (!ids.length) return;
+    await this.guard(async () => {
+      const n = await api.setHidden(ids, hide);
+      this.flash(hide ? `${this.plural(n)} hidden${this.showHidden ? "" : " (View > Hidden Pictures shows them)"}` : `${this.plural(n)} shown again`);
+    });
+  }
+  async hideFolder(f: Folder, hide: boolean) {
+    await this.guard(async () => {
+      await api.setFolderHidden(f.path, hide);
+      this.flash(hide ? `Folder ${f.name} hidden${this.showHidden ? "" : " (View > Hidden Pictures shows it)"}` : `Folder ${f.name} shown again`);
+    });
   }
 
   async toggleStar(ids = this.picked()) {
@@ -169,6 +301,76 @@ class Store {
   async rotate(turns: number, ids = this.picked()) {
     if (this.view === "edit" && this.editRotate) await this.editRotate(turns);
     else if (ids.length) await api.rotate(ids, turns);
+  }
+
+  // ---- albums ----
+  async openAlbum(token: string) {
+    this.timeline = false;
+    await this.guard(async () => {
+      this.album = { token, photos: await api.albumPhotos(token) };
+      for (const p of this.album.photos) if (this.thumbV[p[0]] == null) this.thumbV[p[0]] = p[2];
+      this.activeFolder = -1;
+      this.selection = new Set();
+      this.focus = null;
+    });
+  }
+  closeAlbum() {
+    if (!this.album) return;
+    this.album = null;
+    this.selection = new Set();
+    this.focus = null;
+  }
+  /** the Add to Album chooser (album list + New Album), where it pops up and for which photos */
+  albumPicker = $state<{ x: number; y: number; ids: number[] } | null>(null);
+  /** the Album Properties dialog: a new album (holding `ids`) or an existing one */
+  albumDialog = $state<{ album: Album; ids: number[]; isNew: boolean } | null>(null);
+  newAlbum(ids = this.picked()) {
+    this.albumDialog = { album: { token: "", name: "", date: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) + "T00:00:00+00:00", location: "", description: "" }, ids, isNew: true };
+  }
+  albumProperties(a: Album) {
+    this.albumDialog = { album: { ...a }, ids: [], isNew: false };
+  }
+  async addToAlbum(token: string, ids = this.picked()) {
+    if (!ids.length) return;
+    await this.guard(async () => {
+      const n = await api.albumAdd(token, ids);
+      this.flash(`${this.plural(n)} added to ${this.albums.find((a) => a.token === token)?.name ?? "the album"}`);
+    });
+  }
+  async removeFromAlbum(ids = this.picked()) {
+    const a = this.album;
+    if (!a || !ids.length) return;
+    await this.guard(async () => {
+      const n = await api.albumRemove(a.token, ids);
+      this.flash(`${this.plural(n)} taken out of the album (the files are not touched)`);
+    });
+  }
+  deleteAlbum(a: AlbumRow) {
+    this.confirm = {
+      title: "Delete Album",
+      text: `The album "${a.name}" will be deleted. Its ${this.plural(a.count)} stay where they are, in their folders.`,
+      ok: "Delete Album",
+      run: async () => {
+        await api.albumDelete(a.token);
+        if (this.album?.token === a.token) this.closeAlbum();
+        this.flash(`Album ${a.name} deleted`);
+      },
+    };
+  }
+
+  // ---- tags ----
+  showTags = $state(localStorage.getItem("showTags") === "1");
+  toggleTags() {
+    this.showTags = !this.showTags;
+    localStorage.setItem("showTags", this.showTags ? "1" : "0");
+  }
+  async changeTags(add: string[], remove: string[], ids = this.picked()) {
+    if (!ids.length) return;
+    await this.guard(async () => {
+      this.flash(`Writing tags into ${this.plural(ids.length)}…`, 0);
+      const n = await api.setTags(ids, add, remove);
+      this.flash(n ? `Tags written into ${this.plural(n)}` : "No change");
+    });
   }
 
   setFolderView(v: "year" | "tree") {

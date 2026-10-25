@@ -7,6 +7,7 @@
   $effect(() => {
     const id = store.focus;
     void store.thumbV[id ?? -1]; // refresh after an edit
+    void store.metaV; // and after tags, caption or albums change
     if (id == null) p = null;
     else api.photo(id).then((x) => (p = x), () => (p = null));
   });
@@ -22,6 +23,9 @@
           ["File Date", new Date(p.mtime * 1000).toLocaleString()],
           ["Starred", p.star ? "Yes" : "No"],
           ["Edits", p.edits.length ? p.edits.join(", ") : "None"],
+          ["Caption", p.caption || "—"],
+          ["Tags", p.tags.length ? p.tags.join(", ") : "—"],
+          ["Albums", p.albums.length ? p.albums.map((t) => store.albums.find((a) => a.token === t)?.name ?? "?").join(", ") : "—"],
         ] as [string, string][])
       : [],
   );

@@ -118,6 +118,14 @@ pub fn update(folder: &Path, file_name: &str, f: impl FnOnce(&mut Entry)) -> Res
     Ok(e)
 }
 
+/// Changes any number of entries (photos, the folder, album sections) in one rewrite.
+pub fn update_all(folder: &Path, f: impl FnOnce(&mut HashMap<String, Entry>)) -> Result<()> {
+    let mut all = read(folder);
+    f(&mut all);
+    all.retain(|_, e| !e.is_empty());
+    write(folder, &all)
+}
+
 fn write(folder: &Path, entries: &HashMap<String, Entry>) -> Result<()> {
     let target = path_for(folder);
     let text = render(entries);
