@@ -140,6 +140,6 @@ Versions released before 2026-11-06 were licensed under GPL-3.0 and remain avail
 
 **How to cite.** If you use this software in research, please cite it. GitHub's *Cite this repository* button (from [CITATION.cff](CITATION.cff)) gives APA and BibTeX. In APA style:
 
-> Feldman, G. (2026). *casapic* (Version 0.1.0) [Computer software]. https://github.com/giladfeldman/CasaPic
+> Feldman, G. (2026). *CasaPic* (Version 0.1.0) [Computer software]. https://github.com/giladfeldman/CasaPic
 
 <!-- license-citation:end -->
