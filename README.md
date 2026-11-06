@@ -122,11 +122,6 @@ npm run check
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Security problems: see [SECURITY.md](SECURITY.md).
 
-## Licence
-
-CasaPic is free software under the GNU General Public License, version 3 or (at your option)
-any later version. See [LICENSE](LICENSE).
-
 <!-- license-citation:start -->
 ## License and citation
 
