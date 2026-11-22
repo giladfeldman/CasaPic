@@ -60,7 +60,7 @@ own files are only read, never changed.
 | Stars, edits, albums of a folder | a hidden `.casapic.ini` file in that folder |
 | Tags and captions | inside the photo file (XMP and IPTC, as Picasa wrote them) |
 | Untouched originals of saved photos | a hidden `.casapicoriginals` folder beside them |
-| Settings, thumbnail cache, search index | `%LOCALAPPDATA%\CasaPic` |
+| Settings, thumbnail cache, search index | `%LOCALAPPDATA%\org.casapic.app\library`, one per Windows user |
 
 A photo file changes only when you Save an edit, adjust its date, or give it tags or a caption.
 
@@ -69,7 +69,40 @@ A photo file changes only when you Save an edit, adjust its date, or give it tag
 CasaPic runs on Windows 10 and 11 (64-bit). It needs the Microsoft Edge WebView2 runtime, which
 Windows 11 already has.
 
-There are no ready-made downloads yet; build it from source as below.
+Run `CasaPic_<version>_x64-setup.exe`. It installs for your Windows user only, into
+`%LOCALAPPDATA%\CasaPic`, so no administrator rights are needed, and offers CasaPic as a
+program for JPEG, PNG, GIF, BMP, TIFF, WebP and HEIC photos (see the quick viewer in the
+[user guide](docs/user-guide.md)). Uninstall it from Windows **Settings ▸ Apps**; tick
+"Delete the application data" there to also remove the library (the index, thumbnails and
+settings; your photos and their `.casapic.ini` files are never touched).
+
+Download `CasaPic_<version>_x64-setup.exe` from the
+[latest release](https://github.com/giladfeldman/CasaPic/releases/latest) and run it. The
+installer is not signed with a paid code-signing certificate, so Windows SmartScreen may warn the
+first time: choose **More info ▸ Run anyway**. To build the installer yourself, see below
+(`npm run tauri build` writes it to `target\release\bundle\nsis`).
+
+### Updates
+
+CasaPic keeps itself up to date from the releases on GitHub. A few seconds after the library
+opens it asks GitHub for the newest release; if there is one, it downloads it, checks its
+signature, installs it (a small progress window) and opens again. While CasaPic stays open it
+checks once a day and waits for you: **Tools ▸ Options ▸ Updates** shows the version, the last
+check, **Check now**, **Restart and install**, and a switch to turn automatic updates off.
+
+Every release is signed with CasaPic's own update key, and CasaPic refuses an installer that
+is not signed with it, that was changed after signing, or that was signed for another version
+(an older release offered as a newer one). An update replaces only the program in
+`%LOCALAPPDATA%\CasaPic`; the library and your photos are not touched. The quick viewer never
+checks for updates. The update log is `%LOCALAPPDATA%\org.casapic.app\update.log`.
+
+**Making a release** (maintainers): set the same new version in `Cargo.toml` (workspace),
+`package.json` and `src-tauri/tauri.conf.json`, commit and push, then run
+`scripts\Publish-CasaPicRelease.ps1 -Publish -Notes "..."`. It builds and signs on this machine
+(no CI) with the private key `%USERPROFILE%\.tauri\casapic-updater.key`, writes `latest.json`
+and uploads the release. Keep a backup of that key outside this computer: without it no
+installed copy will accept a new release. `scripts\Test-UpdaterEndToEnd.ps1` tests the whole
+update path locally with a separate test product.
 
 ## Build from source
 

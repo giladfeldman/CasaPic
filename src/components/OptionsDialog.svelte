@@ -1,8 +1,9 @@
 <script lang="ts">
   import { applyTheme } from "../lib/theme";
-  // Tools > Options: General, File Types and Slideshow, as in Picasa.
-  // Nothing is stored until OK; a change of file types reads the library again.
-  import { api, type Options } from "../lib/api";
+  // Tools > Options: General, File Types and Slideshow, as in Picasa, and Updates.
+  // Nothing is stored until OK; a change of file types reads the library again. The Updates
+  // page acts at once (its switch and buttons are not part of OK / Cancel).
+  import { api, type Options, type UpdateStatus } from "../lib/api";
   import { store } from "../lib/store.svelte";
 
   let { onclose }: { onclose: () => void } = $props();
@@ -19,7 +20,7 @@
   // the stored list spells out every extension; the dialog shows one box per kind
   const SPELLED: Record<string, string[]> = { jpg: ["jpg", "jpeg", "jpe"], tiff: ["tif", "tiff"] };
 
-  let tab = $state<"general" | "types" | "slides">("general");
+  let tab = $state<"general" | "types" | "slides" | "updates">("general");
   let o = $state<Options | null>(null);
   let kinds = $state<Record<string, boolean>>({});
   let busy = $state(false);
@@ -45,6 +46,32 @@
       busy = false;
     }
   }
+  let upd = $state<UpdateStatus | null>(null);
+  let updBusy = $state(false);
+  let updMsg = $state<string | null>(null);
+  const refreshUpdates = () => api.updateStatus().then((s) => (upd = s)).catch((e) => (updMsg = String(e)));
+  refreshUpdates();
+  async function updRun(action: () => Promise<string>) {
+    updBusy = true;
+    updMsg = "Checking…";
+    try {
+      updMsg = await action();
+    } catch (e) {
+      updMsg = String(e);
+    }
+    updBusy = false;
+    refreshUpdates();
+  }
+  async function setAuto(on: boolean) {
+    try {
+      await api.updateSetAuto(on);
+    } catch (e) {
+      updMsg = String(e);
+    }
+    refreshUpdates();
+  }
+  const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
+
   async function clearCache() {
     cleared = "Clearing…";
     try {
@@ -67,6 +94,7 @@
       <button class:on={tab === "general"} onclick={() => (tab = "general")}>General</button>
       <button class:on={tab === "types"} onclick={() => (tab = "types")}>File Types</button>
       <button class:on={tab === "slides"} onclick={() => (tab = "slides")}>Slideshow</button>
+      <button class:on={tab === "updates"} onclick={() => (tab = "updates")}>Updates</button>
     </div>
     {#if o}
       <div class="body">
@@ -86,6 +114,27 @@
             <button onclick={clearCache}>Clear Thumbnail Cache</button>
             <span class="hint">{cleared ?? "Makes every thumbnail again from the photo files. Your photos are not touched."}</span>
           </div>
+        {:else if tab === "updates"}
+          {#if upd}
+            <p>CasaPic version {upd.running_version}</p>
+            {#if upd.can_update}
+              <label><input type="checkbox" checked={upd.auto_update} onchange={(e) => setAuto(e.currentTarget.checked)} />
+                Update automatically (checks GitHub when CasaPic starts and once a day)</label>
+              <div class="cache">
+                <button onclick={() => updRun(api.updateCheck)} disabled={updBusy || upd.checking}>Check now</button>
+                {#if upd.pending_version}
+                  <button onclick={() => updRun(api.updateInstall)} disabled={updBusy}>Restart and install {upd.pending_version}</button>
+                {/if}
+              </div>
+              <p class="hint">Last check: {when(upd.last_checked)}{upd.last_result ? ` — ${upd.last_result}` : ""}</p>
+              {#if updMsg}<p class="hint">{updMsg}</p>{/if}
+              <p class="hint">Each update is checked against CasaPic's signature before it is installed. Your library and photos are not touched.</p>
+            {:else}
+              <p class="hint">{upd.unavailable_reason}</p>
+            {/if}
+          {:else}
+            <p class="hint">{updMsg ?? "Reading…"}</p>
+          {/if}
         {:else if tab === "slides"}
           <label>Display time
             <input type="number" min="1" max="60" step="1" value={o.slide_seconds}

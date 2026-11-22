@@ -1,4 +1,5 @@
 // Window-wide state shared by the views (Svelte 5 runes).
+import { storage } from "./safe-storage";
 import { applyTheme } from "./theme";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -10,9 +11,9 @@ class Store {
   /** the folders as the index returns them */
   allFolders = $state<Folder[]>([]);
   /** folder list: "year" (flat, grouped by year, as Picasa's default) or "tree" */
-  folderView = $state<"year" | "tree">((localStorage.getItem("folderView") as "year" | "tree") ?? "year");
-  folderSort = $state<FolderSort>((localStorage.getItem("folderSort") as FolderSort) ?? "date");
-  folderReverse = $state(localStorage.getItem("folderReverse") === "1");
+  folderView = $state<"year" | "tree">((storage.get("folderView") as "year" | "tree") ?? "year");
+  folderSort = $state<FolderSort>((storage.get("folderSort") as FolderSort) ?? "date");
+  folderReverse = $state(storage.get("folderReverse") === "1");
   /** every album, by name (left panel, Albums) */
   albums = $state<AlbumRow[]>([]);
   /** the album open in the grid instead of the folders, with its photos */
@@ -27,7 +28,7 @@ class Store {
   /** bumped after every reload, so open panels read the photo again (tags, caption) */
   metaV = $state(0);
   /** View > Hidden Pictures: hidden photos and folders are shown (dimmed) */
-  showHidden = $state(localStorage.getItem("showHidden") === "1");
+  showHidden = $state(storage.get("showHidden") === "1");
   /** View > Timeline (Ctrl+5): every photo by month, across folders */
   timeline = $state(false);
   /** search (Ctrl+F) and its filters; `hits` holds the matching ids while one is active */
@@ -94,12 +95,12 @@ class Store {
    *  top of the screen and how far below the top edge it sat. Kept by photo, not by pixel, so
    *  the place survives opening a photo, other thumbnail sizes, a resized window and a restart. */
   gridPlace: Record<string, { id: number; off: number }> = (() => {
-    try { return JSON.parse(localStorage.getItem("gridPlace") ?? "{}"); } catch { return {}; } // damaged saved value: start fresh
+    try { return JSON.parse(storage.get("gridPlace") ?? "{}"); } catch { return {}; } // damaged saved value: start fresh
   })();
   saveGridPlace(key: string, place: { id: number; off: number }) {
     this.gridPlace[key] = place;
     clearTimeout(this.placeTimer);
-    this.placeTimer = setTimeout(() => localStorage.setItem("gridPlace", JSON.stringify(this.gridPlace)), 400);
+    this.placeTimer = setTimeout(() => storage.set("gridPlace", JSON.stringify(this.gridPlace)), 400);
   }
   private placeTimer: ReturnType<typeof setTimeout> | undefined;
   /** the folder list's scroll position, kept while a photo is open */
@@ -112,10 +113,10 @@ class Store {
   thumbV = $state<Record<number, number>>({});
 
   view = $state<"library" | "edit">("library");
-  thumbSize = $state(Number(localStorage.getItem("thumbSize") ?? 140));
+  thumbSize = $state(Number(storage.get("thumbSize") ?? 140));
   /** the largest thumbnail that fits (one photo per row); set by the grid from its size */
   thumbMax = $state(256);
-  showProperties = $state(localStorage.getItem("showProperties") === "1");
+  showProperties = $state(storage.get("showProperties") === "1");
   activeFolder = $state<number | null>(null);
   status = $state("");
   exportFor = $state<number[] | null>(null);
@@ -244,7 +245,7 @@ class Store {
   }
   toggleShowHidden() {
     this.showHidden = !this.showHidden;
-    localStorage.setItem("showHidden", this.showHidden ? "1" : "0");
+    storage.set("showHidden", this.showHidden ? "1" : "0");
   }
   hiddenIds = $derived(new Set(this.folders.flatMap((f) => f.photos.filter((p) => p[3]).map((p) => p[0]))));
   async hidePicked(hide: boolean, ids = this.picked()) {
@@ -476,10 +477,10 @@ class Store {
   }
 
   // ---- tags ----
-  showTags = $state(localStorage.getItem("showTags") === "1");
+  showTags = $state(storage.get("showTags") === "1");
   toggleTags() {
     this.showTags = !this.showTags;
-    localStorage.setItem("showTags", this.showTags ? "1" : "0");
+    storage.set("showTags", this.showTags ? "1" : "0");
   }
   async changeTags(add: string[], remove: string[], ids = this.picked()) {
     if (!ids.length) return;
@@ -492,15 +493,15 @@ class Store {
 
   setFolderView(v: "year" | "tree") {
     this.folderView = v;
-    localStorage.setItem("folderView", v);
+    storage.set("folderView", v);
   }
   setFolderSort(s: FolderSort) {
     this.folderSort = s;
-    localStorage.setItem("folderSort", s);
+    storage.set("folderSort", s);
   }
   toggleFolderReverse() {
     this.folderReverse = !this.folderReverse;
-    localStorage.setItem("folderReverse", this.folderReverse ? "1" : "0");
+    storage.set("folderReverse", this.folderReverse ? "1" : "0");
   }
 
   /** open dialogs */
@@ -652,7 +653,7 @@ class Store {
   async saveAs(id = this.picked()[0]) {
     if (id == null) return;
     const p = await api.photo(id);
-    const dest = await saveDialog({ title: "Save As", defaultPath: p.path.replace(/(\.[^.\\/]+)?$/, "-1.jpg"), filters: [{ name: "JPEG", extensions: ["jpg"] }] });
+    const dest = await saveDialog({ title: "Save As", defaultPath: p.path.replace(/(\.[^.\\/]+)?$/, "-001.jpg"), filters: [{ name: "JPEG", extensions: ["jpg"] }] });
     if (!dest) return;
     await this.guard(async () => {
       const out = await api.saveCopy(id, dest);
@@ -705,11 +706,11 @@ class Store {
 
   setThumbSize(v: number) {
     this.thumbSize = v;
-    localStorage.setItem("thumbSize", String(v));
+    storage.set("thumbSize", String(v));
   }
   toggleProperties() {
     this.showProperties = !this.showProperties;
-    localStorage.setItem("showProperties", this.showProperties ? "1" : "0");
+    storage.set("showProperties", this.showProperties ? "1" : "0");
   }
 }
 

@@ -19,8 +19,10 @@
     try {
       if (store.prompt) await store.prompt.run(text);
       else {
-        if (skip && store.confirm?.skip) await store.confirm.skip(skip);
-        await store.confirm?.run();
+        // the "don't ask again" choice is kept only once the action has worked
+        const c = store.confirm;
+        await c?.run();
+        if (skip && c?.skip) await c.skip(skip);
       }
       close();
     } catch (e) {

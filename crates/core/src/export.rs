@@ -25,12 +25,7 @@ pub fn export(src: &Path, orientation: i64, ops: &[Op], dest_dir: &Path, opt: &E
     std::fs::create_dir_all(dest_dir)?;
     let jpeg = render_jpeg(src, orientation, ops, opt)?;
     let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "photo".into());
-    let mut dest = dest_dir.join(format!("{stem}.jpg"));
-    let mut n = 1;
-    while dest.exists() {
-        dest = dest_dir.join(format!("{stem}-{n}.jpg"));
-        n += 1;
-    }
+    let dest = crate::paths::unused_name(dest_dir, &stem, "jpg");
     if dest.canonicalize().ok() == src.canonicalize().ok() {
         bail!("refusing to overwrite the original");
     }
@@ -54,12 +49,11 @@ pub fn render_jpeg(src: &Path, orientation: i64, ops: &[Op], opt: &ExportOptions
     let base = crate::wic::orient(crate::wic::decode(src, decode_edge)?, orientation);
     let scale = base.width().max(base.height()) as f32 / w0.max(h0).max(1) as f32;
     let mut out = render::apply_scaled(&Img::from_rgb8(&base), ops, scale.min(1.0)).to_rgb8();
-    if let Some(m) = opt.max_edge {
-        if out.width().max(out.height()) > m {
+    if let Some(m) = opt.max_edge
+        && out.width().max(out.height()) > m {
             let (tw, th) = crate::wic::fit(out.width(), out.height(), m);
             out = image::imageops::resize(&out, tw, th, image::imageops::FilterType::CatmullRom);
         }
-    }
     let jpeg = crate::thumbs::encode_jpeg(&out, opt.quality.clamp(1, 100))?;
     Ok(match original_exif(src) {
         Some(app1) => insert_app1(&jpeg, &app1),

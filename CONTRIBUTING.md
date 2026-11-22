@@ -32,7 +32,10 @@ share is fine.
 - **Never change a photo file without being asked.** Edits live in `.casapic.ini` recipes. A
   file is written only by Save, Adjust Date, tags or captions, and its untouched original is
   kept first in `.casapicoriginals`.
-- **No network access.** CasaPic works entirely offline and sends nothing anywhere.
+- **No network access except the update check.** CasaPic works offline. The one exception is
+  `src-tauri/src/updates.rs`: it reads CasaPic's release file on GitHub (when CasaPic starts and
+  once a day, unless turned off in Tools ▸ Options ▸ Updates) and downloads a signed installer.
+  It sends nothing about the user's photos or library. Do not add any other network access.
 - **No Picasa code or files.** CasaPic is written from scratch. Do not copy code, images or
   other material from Picasa or any other program whose licence does not allow it.
 - Every edit tool is a recipe operation in `crates/core/src/recipe.rs`, drawn in

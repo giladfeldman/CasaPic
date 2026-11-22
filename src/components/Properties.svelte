@@ -20,7 +20,7 @@
           ["Dimensions", `${p.width} x ${p.height} pixels`],
           ["Camera", p.camera ?? "—"],
           ["Camera Date", p.taken != null ? fmtDate(p.taken) : "—"],
-          ["File Date", new Date(p.mtime * 1000).toLocaleString()],
+          ["File Date", fmtDate(p.mtime)],
           ["Starred", p.star ? "Yes" : "No"],
           ["Edits", p.edits.length ? p.edits.join(", ") : "None"],
           ["Caption", p.caption || "—"],

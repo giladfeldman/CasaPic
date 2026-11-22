@@ -1,0 +1,122 @@
+/* The quick photo viewer: the photo over a dimmed screen, like Picasa's Photo Viewer. */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  font-size: 13px;
+  color: #eee;
+  user-select: none;
+  color-scheme: dark;
+}
+#stage {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  overflow: hidden;
+}
+#photo {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  box-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
+  image-rendering: auto;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+#photo.shown { opacity: 1; }
+#photo.grab { cursor: grab; }
+#photo.grabbing { cursor: grabbing; }
+#note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  color: #ccc;
+}
+/* as Picasa's Photo Viewer: one control strip along the bottom (always shown), the photo's
+   name and size just above it, and only a round close button in the top corner */
+#bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 0 16px;
+  background: #262626;
+  border-top: 1px solid #3a3a3a;
+}
+#title {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 52px;
+  height: 32px;
+  line-height: 32px;
+  text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  text-shadow: 0 1px 2px #000;
+}
+#size { font-weight: 400; color: #ccc; }
+#pos { color: #999; font-weight: 400; margin-left: 12px; }
+#close { position: fixed; top: 8px; right: 8px; }
+body.idle #stage { cursor: none; }
+.group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(30, 30, 32, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  padding: 4px 8px;
+}
+button {
+  font: inherit;
+  color: #eee;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+button:hover { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.18); }
+button:active { background: rgba(255, 255, 255, 0.2); }
+button:disabled { opacity: 0.35; cursor: default; background: transparent; border-color: transparent; }
+button.round { border-radius: 50%; width: 30px; padding: 0; }
+button.big { width: 38px; height: 38px; font-size: 16px; }
+button.primary { background: #3b7d2f; border-color: #57a046; color: #fff; padding: 0 14px; }
+button.primary:hover { background: #46923a; }
+button.on { color: #ffd23a; }
+#prev { transform: scaleX(-1); }
+#zoom { width: 120px; accent-color: #9cc6ff; }
+#info {
+  position: fixed;
+  right: 16px;
+  bottom: 74px;
+  width: 280px;
+  background: rgba(30, 30, 32, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 10px 14px;
+  line-height: 1.6;
+  user-select: text;
+}
+#info dt { color: #999; float: left; width: 80px; }
+#info dd { margin: 0 0 0 84px; word-break: break-all; }
+#ask { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.4); }
+#ask .box { background: #2a2a2c; border: 1px solid #555; border-radius: 8px; padding: 16px 20px; max-width: 420px; }
+#ask .row { display: flex; gap: 8px; justify-content: flex-end; }
+[hidden] { display: none !important; }

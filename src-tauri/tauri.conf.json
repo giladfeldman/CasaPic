@@ -19,7 +19,8 @@
         "minWidth": 900,
         "minHeight": 600,
         "backgroundColor": "#F2EFE6",
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "create": false
       }
     ],
     "security": {
@@ -28,13 +29,54 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "jpg",
+          "jpeg",
+          "jpe",
+          "png",
+          "gif",
+          "bmp",
+          "tif",
+          "tiff",
+          "webp",
+          "heic"
+        ],
+        "name": "CasaPic.Photo",
+        "description": "Photo (opens in the CasaPic viewer)",
+        "role": "Viewer"
+      }
+    ],
+    "shortDescription": "CasaPic photo organiser and viewer",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    },
+    "createUpdaterArtifacts": true,
+    "homepage": "https://github.com/giladfeldman/CasaPic"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM3RTcyNkVEQUU1RTg4RTcKUldUbmlGNnU3U2JueDIvWVR6Uyt2WHU2bW5uQXFod1Zzb1VQZlNHNU4wT1dtNGNZZHBVdkRRSnAK",
+      "endpoints": [
+        "https://github.com/giladfeldman/CasaPic/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

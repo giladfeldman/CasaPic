@@ -1,5 +1,5 @@
 //! Integration tests on real JPEGs from the test library (`tmp/testlib`, made by
-//! `lab/scripts/make_photos.sh`). They fail, rather than skip, if the library is missing.
+//! `scripts/make_testlib.py`). They fail, rather than skip, if the library is missing.
 
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
@@ -10,7 +10,7 @@ use casapic_core::{db::Db, export, recipe::Op, render, scan, sidecar, thumbs, wa
 
 fn testlib() -> PathBuf {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/testlib");
-    assert!(p.is_dir(), "test library missing at {} (see lab/scripts/make_photos.sh)", p.display());
+    assert!(p.is_dir(), "test library missing at {} (make it with: python scripts/make_testlib.py)", p.display());
     p
 }
 

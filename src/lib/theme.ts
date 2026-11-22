@@ -1,5 +1,6 @@
 // Light and dark colours. "system" follows the Windows setting (Settings > Personalisation >
 // Colours > app mode) and changes with it while CasaPic runs.
+import { storage } from "./safe-storage";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type Theme = "system" | "light" | "dark";
@@ -22,7 +23,7 @@ function paint() {
 
 export function applyTheme(t: Theme) {
   chosen = t;
-  localStorage.setItem("theme", t);
+  storage.set("theme", t);
   paint();
 }
 

@@ -57,7 +57,9 @@ pub fn skipped_below(dir: &Path, start: &Path) -> bool {
 }
 
 fn mtime_of(md: &std::fs::Metadata) -> i64 {
-    md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0)
+    // on the clock camera dates use, so that a file date stands in for a missing camera date
+    let utc = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
+    crate::dates::local_clock(utc)
 }
 
 /// Scans every folder under `root`. Returns stats and the ids of new/changed photos.
@@ -260,7 +262,7 @@ mod tests {
         let a = ps.iter().find(|p| p.name == "a.jpg").unwrap();
         let b = ps.iter().find(|p| p.name == "b.jpg").unwrap();
         assert_eq!((a.tags.clone(), a.caption.as_str()), (l.tags.clone(), "At the lake"));
-        assert_eq!(a.albums, [hol.token.clone()]);
+        assert_eq!(a.albums, std::slice::from_ref(&hol.token));
         assert!(b.hidden && !a.hidden);
         let albums = db.albums().unwrap();
         assert_eq!((albums.len(), albums[0].count, albums[0].album.name.as_str()), (1, 2, "Holiday"));

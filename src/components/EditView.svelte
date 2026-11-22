@@ -594,6 +594,7 @@
     else if (k === "delete" && id != null) store.deletePicked([id]);
     else if (k === "f2" && id != null) store.renamePicked();
     else if (e.ctrlKey && k === "h") store.toggleHold();
+    else if (e.ctrlKey && k === "8" && id != null) store.toggleStar([id]);
     else if (e.ctrlKey && e.shiftKey && k === "o") store.openWith("editor");
     else return;
     e.preventDefault();

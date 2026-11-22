@@ -239,11 +239,10 @@ pub fn apply_folder(fi: &FolderImport, recipes: &HashMap<String, Vec<Op>>) -> Re
                 }
             }
             e.set("albums", &tokens.join(","));
-            if e.filters.is_empty() {
-                if let Some(ops) = recipes.get(&p.name) {
+            if e.filters.is_empty()
+                && let Some(ops) = recipes.get(&p.name) {
                     e.filters = recipe::to_string(ops);
                 }
-            }
         }
         albums::tidy(m);
     })

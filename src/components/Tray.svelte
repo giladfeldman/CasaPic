@@ -54,7 +54,7 @@
     <button class="clear" title="Clear selection (Ctrl+D)" disabled={!picked.length} onclick={() => store.clearSelection()}>✕</button>
   </div>
   <div class="tools">
-    <button title={allStarred ? "Remove star" : "Star"} disabled={!picked.length} onclick={() => store.toggleStar(picked)}
+    <button title={allStarred ? "Remove star (Ctrl+8)" : "Star (Ctrl+8)"} disabled={!picked.length} onclick={() => store.toggleStar(picked)}
       ><span class="ico" class:on={allStarred}>★</span></button
     >
     <button title="Rotate counterclockwise (Ctrl+Shift+R)" disabled={!picked.length} onclick={() => store.rotate(-1, picked)}><span class="ico">↺</span></button>

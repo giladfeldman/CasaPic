@@ -5,8 +5,8 @@
 //! Every action here carries all of these together, so a photo never loses its edits or its
 //! original by being renamed, moved or copied.
 //!
-//! Names never collide: a photo arriving where its name is taken becomes `name-1.jpg`,
-//! `name-2.jpg`, ... (the same rule as Export). Nothing is ever overwritten.
+//! Names never collide: a photo arriving where its name is taken becomes `name-001.jpg`,
+//! `name-002.jpg`, ... (Picasa's names, the same rule as Export). Nothing is ever overwritten.
 
 use std::path::{Path, PathBuf};
 
@@ -22,8 +22,11 @@ pub fn free_name(dir: &Path, file_name: &str) -> String {
     }
     let p = Path::new(file_name);
     let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    (1..).map(|n| format!("{stem}-{n}{ext}")).find(|n| !dir.join(n).exists()).expect("a free name")
+    let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+    let n = crate::paths::numbered_name(dir, &stem, &ext);
+    let name = n.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    // a name without an extension gets no trailing dot
+    if ext.is_empty() { name.trim_end_matches('.').to_string() } else { name }
 }
 
 /// Checks a name typed by the user for a file or folder (no path, nothing Windows refuses).
@@ -198,8 +201,56 @@ pub fn move_folder(dir: &Path, into: &Path) -> Result<PathBuf> {
     if into.canonicalize()?.starts_with(dir.canonicalize()?) {
         bail!("a folder cannot be moved into itself");
     }
-    std::fs::rename(dir, &to).with_context(|| format!("move {} into {} (moving between disks is not supported yet)", dir.display(), into.display()))?;
-    Ok(to)
+    match std::fs::rename(dir, &to) {
+        Ok(()) => Ok(to),
+        // ERROR_NOT_SAME_DEVICE: another disk, where a folder cannot simply be renamed
+        Err(e) if e.raw_os_error() == Some(17) => {
+            move_by_copy(dir, &to)?;
+            Ok(to)
+        }
+        Err(e) => Err(e).with_context(|| format!("move {} into {}", dir.display(), into.display())),
+    }
+}
+
+/// Moves a folder to another disk: copies everything (hidden files such as `.casapic.ini` and
+/// kept originals included), checks that every file arrived whole, and only then sends the old
+/// folder to the Recycle Bin, so a failure part-way never loses anything. A failed copy is
+/// removed again and the old folder is left as it was.
+pub fn move_by_copy(dir: &Path, to: &Path) -> Result<()> {
+    fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+        std::fs::create_dir(to).with_context(|| format!("create {}", to.display()))?;
+        for e in std::fs::read_dir(from).with_context(|| format!("read {}", from.display()))? {
+            let e = e?;
+            let (src, dst) = (e.path(), to.join(e.file_name()));
+            if e.file_type()?.is_dir() {
+                copy_tree(&src, &dst)?;
+            } else {
+                std::fs::copy(&src, &dst).with_context(|| format!("copy {}", src.display()))?;
+            }
+        }
+        Ok(())
+    }
+    /// every file of `from` is in `to` with the same size
+    fn same_tree(from: &Path, to: &Path) -> Result<()> {
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            let dst = to.join(e.file_name());
+            if e.file_type()?.is_dir() {
+                same_tree(&e.path(), &dst)?;
+            } else if std::fs::metadata(&dst).map(|m| m.len()).ok() != Some(e.metadata()?.len()) {
+                bail!("{} did not copy whole", e.path().display());
+            }
+        }
+        Ok(())
+    }
+    if to.exists() {
+        bail!("{} already exists", to.display());
+    }
+    if let Err(e) = copy_tree(dir, to).and_then(|_| same_tree(dir, to)) {
+        let _ = std::fs::remove_dir_all(to);
+        return Err(e.context(format!("move {} to {} (nothing was changed)", dir.display(), to.display())));
+    }
+    trash::delete(dir).with_context(|| format!("the folder was copied to {}, but the old one could not go to the Recycle Bin", to.display()))
 }
 
 /// Makes a new, empty folder.
@@ -216,6 +267,27 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moving_by_copy_keeps_everything_and_bins_the_old_folder() {
+        let (_t, a, b) = setup();
+        let trip = a.join("Trip");
+        std::fs::create_dir_all(trip.join("day 2")).unwrap();
+        saved_photo(&trip, "p.jpg");
+        std::fs::write(trip.join("day 2").join("q.jpg"), vec![7u8; 100_000]).unwrap();
+        let to = b.join("Trip");
+        move_by_copy(&trip, &to).unwrap();
+        assert!(!trip.exists(), "the old folder went to the Recycle Bin");
+        assert_eq!(std::fs::read(to.join("p.jpg")).unwrap(), b"edited picture");
+        assert_eq!(std::fs::read(to.join(ORIGINALS).join("p.jpg")).unwrap(), b"untouched original", "kept originals come along");
+        assert!(sidecar::read(&to)["p.jpg"].star, "stars and edits come along");
+        assert_eq!(std::fs::read(to.join("day 2").join("q.jpg")).unwrap().len(), 100_000);
+        // a folder already there: nothing happens
+        std::fs::create_dir_all(a.join("Other")).unwrap();
+        std::fs::create_dir_all(b.join("Other")).unwrap();
+        assert!(move_by_copy(&a.join("Other"), &b.join("Other")).is_err());
+        assert!(a.join("Other").is_dir());
+    }
 
     fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let t = tempfile::tempdir().unwrap();
@@ -256,7 +328,7 @@ mod tests {
         assert_eq!(rename_photo(&a, "x.jpg", "beach").unwrap(), "beach.jpg", "extension kept");
         assert_carried(&a, "beach.jpg");
         assert!(!a.join("x.jpg").exists());
-        assert!(sidecar::read(&a).get("x.jpg").is_none());
+        assert!(!sidecar::read(&a).contains_key("x.jpg"));
         assert_eq!(rename_photo(&a, "beach.jpg", "Beach.jpg").unwrap(), "Beach.jpg", "case-only rename");
         assert_carried(&a, "Beach.jpg");
         std::fs::write(a.join("other.jpg"), b"o").unwrap();
@@ -270,14 +342,14 @@ mod tests {
         saved_photo(&a, "x.jpg");
         std::fs::write(b.join("x.jpg"), b"someone else").unwrap();
         let n = transfer_photo(&a, "x.jpg", &b, true).unwrap();
-        assert_eq!(n, "x-1.jpg");
-        assert_carried(&b, "x-1.jpg");
+        assert_eq!(n, "x-001.jpg");
+        assert_carried(&b, "x-001.jpg");
         assert_carried(&a, "x.jpg");
         assert_eq!(std::fs::read(b.join("x.jpg")).unwrap(), b"someone else");
 
         let n = transfer_photo(&a, "x.jpg", &b, false).unwrap();
-        assert_eq!(n, "x-2.jpg");
-        assert_carried(&b, "x-2.jpg");
+        assert_eq!(n, "x-002.jpg");
+        assert_carried(&b, "x-002.jpg");
         assert!(!a.join("x.jpg").exists());
         assert!(!a.join(ORIGINALS).exists(), "the empty originals folder goes");
         assert!(!sidecar::path_for(&a).exists(), "the empty sidecar goes");
@@ -308,7 +380,7 @@ mod tests {
         let _ = crate::wic::dimensions(&a.join(&name));
         delete_photo(&a, &name).unwrap();
         assert!(!a.join(&name).exists());
-        assert!(sidecar::read(&a).get(&name).is_none());
+        assert!(!sidecar::read(&a).contains_key(&name));
         let items: Vec<_> = trash::os_limited::list().unwrap().into_iter().filter(|i| i.name == name.as_str()).collect();
         assert_eq!(items.len(), 1, "in the Recycle Bin");
         trash::os_limited::restore_all(items).unwrap();

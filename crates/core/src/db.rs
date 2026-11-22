@@ -12,7 +12,9 @@ use serde::Serialize;
 
 /// Bumped whenever the tables change. The database is only a cache of the folders and their
 /// sidecars, so an older one is simply dropped and rebuilt by the next scan.
-const SCHEMA_VERSION: i64 = 3;
+/// 4: file dates (`mtime`) kept on the local clock, like camera dates (see
+/// `dates::local_clock`); an index of version 3 is converted in place.
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
@@ -180,13 +182,42 @@ fn photo_from_row(r: &rusqlite::Row) -> rusqlite::Result<Photo> {
 const PHOTO_COLS: &str =
     "id, folder_id, name, size, mtime, width, height, taken, orientation, camera, star, recipe, thumb_level, tags, caption, albums, hidden";
 
+/// Version 3 to 4: every stored file date moves to the local clock, and the folder dates made
+/// from them follow, in one transaction (all or nothing). Nothing else changes, so no photo
+/// has to be read again.
+fn to_local_file_dates(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    {
+        let rows = {
+            let mut st = tx.prepare("SELECT id, mtime FROM photos")?;
+            st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut up = tx.prepare("UPDATE photos SET mtime = ?2 WHERE id = ?1")?;
+        for (id, m) in rows {
+            up.execute(params![id, crate::dates::local_clock(m)])?;
+        }
+        tx.execute_batch(
+            "UPDATE folders SET
+               date_min = (SELECT MIN(COALESCE(taken, mtime)) FROM photos WHERE folder_id = folders.id),
+               date_max = (SELECT MAX(COALESCE(taken, mtime)) FROM photos WHERE folder_id = folders.id);
+             PRAGMA user_version = 4;",
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Db> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version == 3 {
+            to_local_file_dates(&conn)?;
+            version = 4;
+        }
         if version != SCHEMA_VERSION {
             conn.execute_batch("DROP TABLE IF EXISTS thumbs; DROP TABLE IF EXISTS photos; DROP TABLE IF EXISTS folders; DROP TABLE IF EXISTS albums;")?;
         }
@@ -588,5 +619,52 @@ impl Db {
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?)
+    }
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+
+    /// an index of version 3 (file dates in UTC) keeps everything and gets local-clock dates
+    #[test]
+    fn version_3_index_moves_file_dates_to_the_local_clock() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("index.db");
+        let (summer, winter, taken) = (1_782_000_000_i64, 1_767_000_000_i64, 1_700_000_000_i64);
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.execute_batch(
+                "INSERT INTO folders(id, path, name, root) VALUES (1, 'C:/p/a', 'a', 'C:/p');
+                 INSERT INTO albums(token, name, date, location, description) VALUES ('t1', 'Trip', '', '', '');
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+            c.execute("INSERT INTO photos(folder_id, name, size, mtime, star) VALUES (1, 'a.jpg', 5, ?1, 1)", [summer]).unwrap();
+            c.execute("INSERT INTO photos(folder_id, name, size, mtime, taken) VALUES (1, 'b.jpg', 5, ?1, ?2)", [winter, taken]).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let c = db.c();
+        let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let m: Vec<(i64, bool)> = c
+            .prepare("SELECT mtime, star FROM photos ORDER BY name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(m, vec![(crate::dates::local_clock(summer), true), (crate::dates::local_clock(winter), false)], "dates moved, stars kept");
+        let (lo, hi): (i64, i64) = c.query_row("SELECT date_min, date_max FROM folders WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((lo, hi), (taken, crate::dates::local_clock(summer)), "a camera date stays; a file date stands in only when there is none");
+        let albums: i64 = c.query_row("SELECT COUNT(*) FROM albums", [], |r| r.get(0)).unwrap();
+        assert_eq!(albums, 1, "albums kept");
+        drop(c);
+        drop(db);
+        // opening again changes nothing more
+        let db = Db::open(&path).unwrap();
+        let again: i64 = db.c().query_row("SELECT mtime FROM photos WHERE name = 'a.jpg'", [], |r| r.get(0)).unwrap();
+        assert_eq!(again, crate::dates::local_clock(summer));
     }
 }

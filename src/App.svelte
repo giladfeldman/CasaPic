@@ -61,8 +61,15 @@
     await api.quit();
   }
 
+  /** "Edit in CasaPic" from the quick viewer: the photo opens in the Edit view */
+  async function openFromViewer(id: number | null) {
+    if (id == null) return;
+    await store.reload();
+    openEdit(id);
+  }
+
   onMount(() => {
-    store.reload().then(timing);
+    store.reload().then(timing).then(() => api.takeSelect()).then(openFromViewer).catch((e) => (store.message = String(e)));
     store.loadSettings();
     api.settings().then((s) => {
       if (!s.folders_confirmed) {
@@ -74,6 +81,7 @@
       listen("library-changed", () => store.reload()),
       listen<number[]>("thumbs-updated", (e) => store.thumbsChanged(e.payload)),
       listen<string>("status", (e) => store.backendStatus(e.payload)),
+      listen<string>("select-path", (e) => api.selectPath(e.payload).then(openFromViewer).catch((err) => (store.message = String(err)))),
     ];
     return () => off.forEach((p) => p.then((f) => f()));
   });
@@ -89,6 +97,19 @@
   async function addFolder() {
     const dir = await pickFolder({ directory: true, title: "Add Folder to CasaPic" });
     if (typeof dir === "string") await api.addFolder(dir).catch((e) => (store.message = String(e)));
+  }
+  /** File > Add File (Ctrl+O, as in Picasa): picks photos; each one's folder joins the library
+   *  (marked Scan Once) if it is not in it yet, and the first photo opens */
+  async function addFile() {
+    const exts = ["jpg", "jpeg", "jpe", "png", "gif", "bmp", "tif", "tiff", "webp", "heic"];
+    const picked = await pickFolder({ multiple: true, title: "Add File to CasaPic", filters: [{ name: "Photos", extensions: exts }] });
+    const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    let first: number | null = null;
+    for (const p of list) {
+      const id = await api.selectPath(p).catch((e) => ((store.message = String(e)), null));
+      first ??= id;
+    }
+    if (first != null) await openFromViewer(first);
   }
   const FOLDER_SORTS: [FolderSort, string][] = [["date", "Creation Date"], ["changed", "Recent Changes"], ["size", "Size"], ["name", "Name"]];
 
@@ -113,7 +134,8 @@
     {
       label: "File",
       items: [
-        { label: "Add Folder to CasaPic…", keys: "Ctrl+O", run: addFolder },
+        { label: "Add Folder to CasaPic…", run: addFolder },
+        { label: "Add File to CasaPic…", keys: "Ctrl+O", run: addFile },
         { label: "New Album…", keys: "Ctrl+N", run: () => store.newAlbum([]) },
         "-",
         { label: "Save a Copy", run: () => store.saveCopy(), enabled: store.picked().length === 1 },
@@ -179,7 +201,7 @@
         { label: "Rotate Counterclockwise", keys: "Ctrl+Shift+R", run: () => store.rotate(-1), enabled: has() },
         { label: "Flip Horizontal", keys: "Ctrl+Shift+H", run: () => store.flip(1), enabled: has() },
         { label: "Flip Vertical", keys: "Ctrl+Shift+V", run: () => store.flip(2), enabled: has() },
-        { label: "Star / Unstar", run: () => store.toggleStar(), enabled: has() },
+        { label: "Star / Unstar", keys: "Ctrl+8", run: () => store.toggleStar(), enabled: has() },
         { label: "Adjust Date and Time…", run: () => (store.dateFor = store.picked()), enabled: has() },
         "-",
         { label: "Add to Album…", run: () => (store.albumPicker = { x: 220, y: 60, ids: store.picked() }), enabled: has() },
@@ -272,6 +294,7 @@
     else if (ctrl && e.shiftKey && k === "h") store.flip(1);
     else if (ctrl && e.shiftKey && k === "v") store.flip(2);
     else if (ctrl && k === "h") store.toggleHold();
+    else if (ctrl && k === "8") store.toggleStar(); // as Picasa 3.9: Ctrl+8 stars and unstars
     else if (ctrl && k === "r") store.rotate(e.shiftKey ? -1 : 1);
     else if (ctrl && e.shiftKey && k === "o") store.openWith("editor");
     else if (ctrl && k === "x") store.cutOrCopy(true);
@@ -280,7 +303,7 @@
     else if (k === "f2") store.renamePicked();
     else if (k === "delete") store.deletePicked(); // Picasa: Delete, and Ctrl+Delete on the right-click menu
     else if (ctrl && e.shiftKey && k === "s") exportPicked();
-    else if (ctrl && !e.shiftKey && k === "o") addFolder();
+    else if (ctrl && !e.shiftKey && k === "o") addFile();
     else if (ctrl && k === "1") store.setThumbSize(80);
     else if (ctrl && k === "2") store.setThumbSize(140);
     else if (ctrl && k === "3") openEdit();

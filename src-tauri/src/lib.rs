@@ -21,6 +21,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 mod files;
 mod folders;
 mod organize;
+mod updates;
+mod viewer;
 
 type Res<T> = Result<T, String>;
 
@@ -210,6 +212,8 @@ pub struct App {
     settings: Mutex<casapic_core::settings::Settings>,
     /// photos prepared ahead, keyed by (id, edge); at most PREPARED_MAX, oldest dropped
     prepared: Mutex<std::collections::VecDeque<((i64, u32), Slot)>>,
+    /// a photo to open in the Edit view once the window is up ("Edit in CasaPic" from the viewer)
+    select: Mutex<Option<PathBuf>>,
 }
 
 /// the photo on screen, three ahead and one behind, plus one spare (~10 MB each at 2048 px)
@@ -835,8 +839,8 @@ fn edit_sample(app: State<'_, App>, x: f32, y: f32, skip: usize) -> Res<[f32; 3]
         for xx in (cx - 2)..=(cx + 2) {
             if xx >= 0 && yy >= 0 && (xx as usize) < img.w && (yy as usize) < img.h {
                 let i = (yy as usize * img.w + xx as usize) * 3;
-                for c in 0..3 {
-                    sum[c] += img.px[i + c].clamp(0.0, 1.0);
+                for (s, v) in sum.iter_mut().zip(&img.px[i..i + 3]) {
+                    *s += v.clamp(0.0, 1.0);
                 }
                 n += 1.0;
             }
@@ -1091,13 +1095,12 @@ fn urlencoding_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let (Some(h), Some(l)) = ((b[i + 1] as char).to_digit(16), (b[i + 2] as char).to_digit(16)) {
+        if b[i] == b'%' && i + 2 < b.len()
+            && let (Some(h), Some(l)) = ((b[i + 1] as char).to_digit(16), (b[i + 2] as char).to_digit(16)) {
                 out.push((h * 16 + l) as u8);
                 i += 3;
                 continue;
             }
-        }
         out.push(b[i]);
         i += 1;
     }
@@ -1209,10 +1212,138 @@ fn thumb_worker(h: AppHandle, db: Arc<Db>, rx: mpsc::Receiver<Job>) {
     }
 }
 
+// ---------- opening a photo from outside (the viewer's "Edit in CasaPic") ----------
+
+/// Finds a photo in the index by its full path (folder paths compare without case).
+fn photo_by_path(db: &Db, path: &Path) -> Option<i64> {
+    let (dir, name) = folder_and_name(path).ok()?;
+    let want = dir.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    let folder = db.folders().ok()?.into_iter().find(|f| f.path.trim_end_matches('\\').to_lowercase() == want)?;
+    db.photos(folder.id).ok()?.into_iter().find(|p| p.name.eq_ignore_ascii_case(&name)).map(|p| p.id)
+}
+
+/// The photo's id, adding its folder to the library first (marked Scan Once, as a folder the
+/// Folder Manager scans one time) when it is not in the library yet.
+fn select_path_in(h: &AppHandle, path: &Path) -> Res<Option<i64>> {
+    let app = h.state::<App>();
+    if let Some(id) = photo_by_path(&app.db, path) {
+        return Ok(Some(id));
+    }
+    let dir = path.parent().ok_or("photo has no folder")?.to_path_buf();
+    let start = {
+        let mut s = app.settings.lock().map_err(err)?;
+        if !s.included(&dir) {
+            s.set(&dir, Some(casapic_core::settings::Scan::Once));
+            s.save().map_err(err)?;
+        }
+        s.start_of(&dir).unwrap_or_else(|| dir.clone())
+    };
+    casapic_core::scan::scan_folder(&app.db, &dir, &start.to_string_lossy()).map_err(err)?;
+    let _ = h.emit("library-changed", ());
+    app.queue(Job::Pending);
+    Ok(photo_by_path(&app.db, path))
+}
+
+/// The photo CasaPic was started for (`--select <path>`), once; None if there is none.
+#[tauri::command(async)]
+fn take_select(h: AppHandle) -> Res<Option<i64>> {
+    let path = h.state::<App>().select.lock().map_err(err)?.take();
+    match path {
+        Some(p) => select_path_in(&h, &p),
+        None => Ok(None),
+    }
+}
+
+/// The id of a photo named by path (sent by a second start while CasaPic was already open).
+#[tauri::command(async)]
+fn select_path(h: AppHandle, path: String) -> Res<Option<i64>> {
+    select_path_in(&h, Path::new(&path))
+}
+
+/// How CasaPic was started: the library (optionally opening one photo), or the quick viewer
+/// for a photo (a file name alone, as Explorer passes it, or `--view <file>`).
+enum Start {
+    Library(Option<PathBuf>),
+    Viewer(PathBuf),
+}
+
+fn start_of(args: &[String]) -> Start {
+    match args {
+        [flag, p] if flag == "--select" => Start::Library(Some(PathBuf::from(p))),
+        [flag, p] if flag == "--view" => Start::Viewer(PathBuf::from(p)),
+        [p] if !p.starts_with("--") && Path::new(p).is_file() => Start::Viewer(PathBuf::from(p)),
+        _ => Start::Library(None),
+    }
+}
+
+fn select_arg(args: &[String]) -> Option<String> {
+    args.iter().position(|a| a == "--select").and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// The app's built-in pages and settings, made in one place (both starts share them).
+fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match start_of(&args) {
+        Start::Viewer(path) => run_viewer(path),
+        Start::Library(select) => run_library(select),
+    }
+}
+
+/// The quick viewer: no index, no watcher, no thumbnail worker; one window over a dimmed screen.
+fn run_viewer(path: PathBuf) {
+    let title = format!("{} - CasaPic", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+    tauri::Builder::default()
+        .manage(viewer::Viewer::new(&path))
+        .register_asynchronous_uri_scheme_protocol("casapic", |ctx, request, responder| {
+            let h = ctx.app_handle().clone();
+            let path = request.uri().path().to_string();
+            tauri::async_runtime::spawn_blocking(move || responder.respond(viewer::serve(&h, &path)));
+        })
+        .setup(move |a| {
+            tauri::WebviewWindowBuilder::new(a, "viewer", tauri::WebviewUrl::App("viewer.html".into()))
+                .title(title)
+                .decorations(false)
+                .transparent(true)
+                .shadow(false)
+                .maximized(true)
+                .build()?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            viewer::viewer_state,
+            viewer::viewer_info,
+            viewer::viewer_star,
+            viewer::viewer_rotate,
+            viewer::viewer_delete,
+            viewer::viewer_edit_in_casapic,
+            viewer::viewer_close,
+        ])
+        .run(context())
+        .expect("error while running the CasaPic viewer");
+}
+
+fn run_library(select: Option<PathBuf>) {
     mark("process-start");
-    let data = paths::data_dir();
+    let mut data = paths::data_dir();
+    if std::env::var_os("CASAPIC_DATA").is_none() {
+        let old = paths::old_data_dir();
+        match paths::move_old_data(&old, &data) {
+            Ok(true) => eprintln!("CasaPic: library copied from {} to {} (the old copy is kept)", old.display(), data.display()),
+            Ok(false) => {}
+            // never start on an empty library while the real one is still in the old place:
+            // use it there this time, and try the copy again at the next start
+            Err(e) => {
+                eprintln!("CasaPic: could not copy the library from {}: {e}; using it there", old.display());
+                paths::use_data_dir(old);
+                data = paths::data_dir();
+            }
+        }
+    }
     std::fs::create_dir_all(&data).expect("cannot create the CasaPic data folder");
     let db = Arc::new(Db::open(&data.join("index.db")).expect("cannot open the photo index"));
     let (tx, rx) = mpsc::channel();
@@ -1227,9 +1358,23 @@ pub fn run() {
         watcher: Mutex::new(None),
         settings: Mutex::new(casapic_core::settings::Settings::load()),
         prepared: Mutex::new(std::collections::VecDeque::new()),
+        select: Mutex::new(select),
     };
     tauri::Builder::default()
+        // a second start while the library is open brings this window forward instead (and
+        // passes on a photo to open); the quick viewer is never limited to one copy
+        .plugin(tauri_plugin_single_instance::init(|h, args, _cwd| {
+            if let Some(w) = h.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+            if let Some(p) = select_arg(&args) {
+                let _ = h.emit("select-path", p);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::UpdateState::default())
         .manage(app_state)
         .register_asynchronous_uri_scheme_protocol("casapic", |ctx, request, responder| {
             let h = ctx.app_handle().clone();
@@ -1238,10 +1383,13 @@ pub fn run() {
         })
         .setup(move |a| {
             mark("setup");
+            // the library window is made here, not by the config, so the viewer never makes it
+            tauri::WebviewWindowBuilder::from_config(a.handle(), &a.config().app.windows[0])?.build()?;
             let h = a.handle().clone();
             let h2 = h.clone();
             organize::load_albums(&h.state::<App>());
             std::thread::spawn(move || thumb_worker(h2, db, rx));
+            updates::start(&h);
             std::thread::spawn(move || folders::sync_library(&h, false));
             Ok(())
         })
@@ -1272,6 +1420,10 @@ pub fn run() {
             timing_mark,
             timing_mode,
             quit,
+            updates::update_status,
+            updates::update_set_auto,
+            updates::update_check,
+            updates::update_install,
             folders::settings_get,
             folders::fm_list,
             folders::fm_save,
@@ -1311,14 +1463,29 @@ pub fn run() {
             files::adjust_dates,
             files::clear_thumb_cache,
             files::open_with,
+            take_select,
+            select_path,
         ])
-        .run(tauri::generate_context!())
+        .run(context())
         .expect("error while running CasaPic");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_mode_from_arguments() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let me = std::env::current_exe().unwrap().to_string_lossy().to_string();
+        assert!(matches!(start_of(&a(&[])), Start::Library(None)));
+        assert!(matches!(start_of(&a(&["--select", r"C:\photos\a.jpg"])), Start::Library(Some(_))));
+        assert!(matches!(start_of(&a(&["--view", r"C:\photos\a.jpg"])), Start::Viewer(_)));
+        assert!(matches!(start_of(&a(&[&me])), Start::Viewer(_)), "an existing file alone opens the viewer");
+        assert!(matches!(start_of(&a(&[r"C:\no\such.jpg"])), Start::Library(None)), "a missing file opens the library");
+        assert_eq!(select_arg(&a(&["casapic.exe", "--select", "p.jpg"])), Some("p.jpg".into()));
+        assert_eq!(select_arg(&a(&["casapic.exe"])), None);
+    }
 
     #[test]
     fn rotations_merge_and_cancel() {

@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use casapic_core::{export, files, recipe};
+use casapic_core::{export, files, paths, recipe};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::{App, Job, Res, err, folder_and_name};
@@ -171,7 +171,8 @@ pub(crate) fn delete_folder(h: AppHandle, app: State<'_, App>, path: String) -> 
     folder_changed(h, &app, &from, None)
 }
 
-/// File > Save a Copy (`dest` = None: beside the photo, as `name-1.jpg`) and File > Save As
+/// File > Save a Copy (`dest` = None: beside the photo, as `name-001.jpg`, `name-002.jpg`…,
+/// Picasa's names) and File > Save As
 /// (`dest` = the file chosen). The photo with its edits is written as a new JPEG; the photo
 /// itself is not touched. Returns the file written.
 #[tauri::command(async)]
@@ -185,7 +186,7 @@ pub(crate) fn save_copy(h: AppHandle, app: State<'_, App>, id: i64, dest: Option
         None => {
             let (dir, name) = folder_and_name(&src)?;
             let stem = Path::new(&name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            dir.join(files::free_name(dir, &format!("{stem}-1.jpg")))
+            paths::numbered_name(dir, &stem, "jpg")
         }
     };
     if target.canonicalize().ok().is_some_and(|t| src.canonicalize().ok() == Some(t)) {

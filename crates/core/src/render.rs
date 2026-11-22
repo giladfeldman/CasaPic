@@ -598,9 +598,9 @@ mod tests {
         for (input, amount, want) in cases {
             let px: Vec<f32> = input.iter().map(|v| v / 255.0).collect();
             let r = apply(&Img { w: 1, h: 1, px }, &[Op::Fill(amount)]);
-            for c in 0..3 {
+            for (c, w) in want.iter().enumerate() {
                 let got = r.px[c].clamp(0.0, 1.0) * 255.0;
-                assert!((got - want[c]).abs() <= 6.0, "{input:?} at {amount}: colour {c} {got:.0}, Picasa {}", want[c]);
+                assert!((got - w).abs() <= 6.0, "{input:?} at {amount}: colour {c} {got:.0}, Picasa {w}");
             }
         }
         // no change at 0; white stays white

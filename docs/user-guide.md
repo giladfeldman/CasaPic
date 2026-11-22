@@ -9,8 +9,9 @@ photos and choose, for each:
 - **Scan Once**: CasaPic reads the folder now and does not watch it.
 - **Remove**: CasaPic stops showing the folder. Nothing on disk changes.
 
-You can come back to the Folder Manager at any time, or use **File ▸ Add Folder to CasaPic**
-(Ctrl+O).
+You can come back to the Folder Manager at any time, or use **File ▸ Add Folder to CasaPic**.
+**File ▸ Add File to CasaPic** (Ctrl+O) picks single photos: each photo's folder is added as
+Scan Once and the first photo opens.
 
 ## The Library
 
@@ -33,7 +34,7 @@ Photo Tray along the bottom.
 
 | Task | How |
 |---|---|
-| Star a photo | the star button in the tray, or Picture ▸ Star / Unstar |
+| Star a photo | Ctrl+8 (again to unstar), the star button in the tray, or Picture ▸ Star / Unstar |
 | Tag photos | View ▸ Tags (Ctrl+T) |
 | Caption a photo | type under the photo in the Edit view, or in Properties (Alt+Enter) |
 | Make an album | File ▸ New Album (Ctrl+N), then Picture ▸ Add to Album, or drag photos onto it |
@@ -52,7 +53,8 @@ can read them. CasaPic keeps the untouched original first.
 | Delete | File ▸ Delete from Disk (Delete key): the photo goes to the Windows Recycle Bin |
 | Move or copy | drag to a folder (Ctrl+drag copies), or Cut / Copy / Paste (Ctrl+X / C / V) |
 | Export a resized copy | File ▸ Export Picture to Folder (Ctrl+Shift+S) |
-| Change the date taken | Picture ▸ Adjust Date and Time |
+| Change the date taken | Picture ▸ Adjust Date and Time (also adds a date to a photo that has none) |
+| Move a folder | Folder ▸ Move Folder (to another disk too: CasaPic copies it, checks the copy, then sends the old folder to the Recycle Bin) |
 | Show in Windows Explorer | File ▸ Locate on Disk (Ctrl+Enter) |
 
 **Delete without being asked each time.** The question before deleting has a "Don't ask again"
@@ -126,10 +128,52 @@ photo.
 - **Create ▸ Picture Collage**: six layouts, borders, background and captions; saved as a new
   picture.
 
+## The quick photo viewer
+
+When CasaPic is the program for a photo type, double-clicking such a photo in Windows Explorer
+opens the **quick viewer** instead of the whole library: the photo over a dimmed screen. It
+opens fast because it reads nothing but that folder's file names.
+
+| Task | How |
+|---|---|
+| Next / previous photo in the folder | → / ← (or Page Down / Page Up), or the arrow buttons |
+| First / last photo | Home / End |
+| Zoom | mouse wheel, + and -, or the slider; **1:1** (key 1) for actual size, **Fit** (key 0) |
+| Move around a zoomed photo | drag it |
+| Slideshow | Space, or the round play button |
+| Rotate | Ctrl+R clockwise, Ctrl+Shift+R counter-clockwise (kept as an edit, as in the library) |
+| Star | Ctrl+8, or the star button |
+| Delete | Delete key: the photo goes to the Windows Recycle Bin, after a question |
+| Photo details | I, or the ⓘ button |
+| Open it in the full CasaPic | **Edit in CasaPic** (Enter): the photo opens in the Edit view; a folder not yet in the library is added as Scan Once |
+| Close | Esc, the ✕ button, or a click on the dimmed screen around the photo |
+
+Stars and turns go into the folder's `.casapic.ini`, so the library shows them too.
+
+**Making CasaPic the program for photos.** The installer offers CasaPic for JPEG, PNG, GIF, BMP,
+TIFF, WebP and HEIC files. Windows decides the default program itself: right-click a photo ▸
+**Open with ▸ Choose another app**, pick **CasaPic**, and tick **Always use this app**. (Or
+Windows **Settings ▸ Apps ▸ Default apps ▸ CasaPic**.) Windows does not let a program make
+itself the default.
+
 ## Settings
 
 **Tools ▸ Options** holds the general settings, which file types to show, slideshow settings,
 and **Colours**: Light, Dark, or Same as Windows.
+
+**Updates.** CasaPic updates itself from its releases on GitHub: when the library opens it
+checks for a newer version, and if there is one it downloads it, checks that it really comes
+from CasaPic, installs it and opens again (a few seconds). While it stays open it checks once a
+day and waits for you to choose **Restart and install**. **Tools ▸ Options ▸ Updates** shows the
+version you have and the last check, has **Check now**, and a box to turn automatic updates
+off. An update never touches your library or your photos.
+
+Settings belong to each Windows user: every person who signs in to the computer has their own
+folders, options, albums and thumbnail cache (in their own
+`%LOCALAPPDATA%\org.casapic.app\library`). A library from an earlier CasaPic, kept in
+`%LOCALAPPDATA%\CasaPic`, is copied there once at the first start; the old copy is left in
+place as a backup and can be deleted (the files `index.db`, `index.db-wal`, `index.db-shm` and
+`settings.json` in that folder).
 
 All keyboard shortcuts are listed under **Help ▸ Keyboard Shortcuts** (F1).
 

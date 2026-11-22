@@ -233,7 +233,7 @@
     ["View and Edit", "Ctrl+3", () => onopen(store.picked()[0])],
     ["Rotate Clockwise", "Ctrl+R", () => store.rotate(1)],
     ["Rotate Counterclockwise", "Ctrl+Shift+R", () => store.rotate(-1)],
-    ["Star / Unstar", "", () => store.toggleStar()],
+    ["Star / Unstar", "Ctrl+8", () => store.toggleStar()],
     ["Rename…", "F2", () => store.renamePicked()],
     ["Delete from Disk", "Del", () => store.deletePicked()],
     ["Cut", "Ctrl+X", () => store.cutOrCopy(true)],

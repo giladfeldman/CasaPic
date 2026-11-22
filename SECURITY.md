@@ -1,7 +1,10 @@
 # Security
 
-CasaPic is a desktop program that works offline. It opens image files from folders you choose,
-so a specially crafted image file is the main way it could be attacked.
+CasaPic is a desktop program that works offline, except for its update check. It opens image
+files from folders you choose, so a specially crafted image file is the main way it could be
+attacked. The update check reads a release file from CasaPic's GitHub page and installs an update
+only if its signature matches CasaPic's own key; it sends nothing about your photos or library,
+and it can be turned off in Tools ▸ Options ▸ Updates.
 
 ## Reporting a problem
 

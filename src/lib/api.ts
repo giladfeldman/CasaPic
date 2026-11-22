@@ -84,6 +84,18 @@ export interface EditState {
 
 export type Fix = "rotate" | "flip" | "crop" | "straighten" | "autocontrast" | "autocolor" | "lucky" | "fill" | "revert";
 
+/** Tools > Options > Updates (src-tauri/src/updates.rs) */
+export type UpdateStatus = {
+  running_version: string;
+  can_update: boolean;
+  unavailable_reason: string | null;
+  auto_update: boolean;
+  pending_version: string | null;
+  checking: boolean;
+  last_checked: string | null;
+  last_result: string | null;
+};
+
 export const api = {
   library: () => invoke<Folder[]>("library"),
   photo: (id: number) => invoke<Photo>("photo", { id }),
@@ -118,7 +130,15 @@ export const api = {
   saveCopy: (id: number, dest: string | null) => invoke<string>("save_copy", { id, dest }),
   adjustDates: (ids: number[], shift: number) => invoke<number>("adjust_dates", { ids, shift }),
   clearThumbCache: () => invoke<number>("clear_thumb_cache"),
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
+  updateSetAuto: (enabled: boolean) => invoke<void>("update_set_auto", { enabled }),
+  updateCheck: () => invoke<string>("update_check"),
+  updateInstall: () => invoke<string>("update_install"),
   openWith: (id: number, how: "editor" | "choose") => invoke<void>("open_with", { id, how }),
+  /** the photo CasaPic was started for by the viewer's "Edit in CasaPic" (once), or null */
+  takeSelect: () => invoke<number | null>("take_select"),
+  /** a photo's id by its full path (its folder is added to the library if needed) */
+  selectPath: (path: string) => invoke<number | null>("select_path", { path }),
   albums: () => invoke<AlbumRow[]>("albums_list"),
   albumPhotos: (token: string) => invoke<PhotoRow[]>("album_photos", { token }),
   albumCreate: (album: Album, ids: number[]) => invoke<string>("album_create", { album, ids }),

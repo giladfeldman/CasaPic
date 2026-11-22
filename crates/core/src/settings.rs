@@ -70,6 +70,7 @@ impl Default for Options {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Settings {
     /// the Folder Manager's marks
     pub folders: Vec<Rule>,
@@ -81,11 +82,6 @@ pub struct Settings {
     pub albums: Vec<crate::albums::Album>,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Settings { folders: Vec::new(), folders_confirmed: false, options: Options::default(), albums: Vec::new() }
-    }
-}
 
 fn file() -> PathBuf {
     crate::paths::data_dir().join("settings.json")

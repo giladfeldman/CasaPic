@@ -178,7 +178,7 @@ mod tests {
         assert!(text.contains(&format!("[.album:{}]", hol.token)));
         assert!(text.contains(&format!("albums={},{}", hol.token, trip.token)), "comma, no space, in order added");
         assert!(text.contains("date=2026-10-24T23:08:56+00:00") && text.contains("name=Holiday"));
-        assert_eq!(in_sidecar(&sidecar::read(&b)), [hol.clone()], "each member's folder has its own copy");
+        assert_eq!(in_sidecar(&sidecar::read(&b)), std::slice::from_ref(&hol), "each member's folder has its own copy");
 
         let mut renamed = hol.clone();
         renamed.name = "Summer".into();
@@ -188,9 +188,9 @@ mod tests {
         remove(&hol.token, &[(b.clone(), "y.jpg".into())]).unwrap();
         assert!(!sidecar::path_for(&b).exists(), "nothing left in b: the sidecar goes");
 
-        delete(&trip.token, &[a.clone()]).unwrap();
+        delete(&trip.token, std::slice::from_ref(&a)).unwrap();
         let m = sidecar::read(&a);
-        assert_eq!(members_of(&m["x.jpg"]), [hol.token.clone()]);
+        assert_eq!(members_of(&m["x.jpg"]), std::slice::from_ref(&hol.token));
         assert_eq!(in_sidecar(&m).len(), 1, "Trip's section gone");
     }
 
@@ -206,12 +206,12 @@ mod tests {
         add(&hol, &[(a.clone(), "x.jpg".into())]).unwrap();
 
         crate::files::transfer_photo(&a, "x.jpg", &b, true).unwrap();
-        assert_eq!(in_sidecar(&sidecar::read(&a)), [hol.clone()], "copy: source keeps it");
-        assert_eq!(in_sidecar(&sidecar::read(&b)), [hol.clone()], "copy: destination gets a copy");
-        assert_eq!(members_of(&sidecar::read(&b)["x.jpg"]), [hol.token.clone()]);
+        assert_eq!(in_sidecar(&sidecar::read(&a)), std::slice::from_ref(&hol), "copy: source keeps it");
+        assert_eq!(in_sidecar(&sidecar::read(&b)), std::slice::from_ref(&hol), "copy: destination gets a copy");
+        assert_eq!(members_of(&sidecar::read(&b)["x.jpg"]), std::slice::from_ref(&hol.token));
 
         crate::files::transfer_photo(&a, "x.jpg", &c, false).unwrap();
         assert!(!sidecar::path_for(&a).exists(), "move: nothing left behind in the source");
-        assert_eq!(in_sidecar(&sidecar::read(&c)), [hol.clone()]);
+        assert_eq!(in_sidecar(&sidecar::read(&c)), std::slice::from_ref(&hol));
     }
 }

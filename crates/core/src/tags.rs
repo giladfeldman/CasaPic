@@ -21,14 +21,17 @@ pub struct Labels {
     pub caption: String,
 }
 
+/// (marker, payload) pairs and where the picture data starts
+type Segments<'a> = (Vec<(u8, &'a [u8])>, usize);
+
 /// The JPEG's segments before the picture data: (marker, payload) pairs, and where the
 /// picture data starts. None if this is not a JPEG.
-fn segments(file: &[u8]) -> Option<(Vec<(u8, &[u8])>, usize)> {
+fn segments(file: &[u8]) -> Option<Segments<'_>> {
     walk(file, false)
 }
 
 /// `lenient`: the buffer may be only the start of the file; return the segments that fit.
-fn walk(file: &[u8], lenient: bool) -> Option<(Vec<(u8, &[u8])>, usize)> {
+fn walk(file: &[u8], lenient: bool) -> Option<Segments<'_>> {
     if !file.starts_with(&[0xFF, 0xD8]) {
         return None;
     }

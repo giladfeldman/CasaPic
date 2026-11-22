@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CasaPic Photo Viewer</title>
+  </head>
+  <body>
+    <div id="stage">
+      <img id="photo" alt="" draggable="false" />
+      <div id="note" hidden></div>
+    </div>
+    <button id="close" class="round" title="Close (Esc)" aria-label="Close">✕</button>
+    <div id="title"><span id="name"></span> <span id="size"></span><span id="pos"></span></div>
+    <footer id="bar">
+      <div class="group" id="zoomgroup">
+        <button id="fit" title="Fit to screen (0)">Fit</button>
+        <button id="actual" title="Actual size, 100% (1)">1:1</button>
+        <input id="zoom" type="range" min="0" max="100" value="0" title="Zoom (mouse wheel, + and -)" aria-label="Zoom" />
+      </div>
+      <button id="edit" class="primary" title="Open this photo in CasaPic's Edit view (Enter)">Edit in CasaPic</button>
+      <div class="group" id="nav">
+        <button id="prev" class="round" title="Previous photo (Left arrow)" aria-label="Previous">◀</button>
+        <button id="play" class="round big" title="Slideshow (Space)" aria-label="Slideshow">▶</button>
+        <button id="next" class="round" title="Next photo (Right arrow)" aria-label="Next">▶</button>
+      </div>
+      <div class="group">
+        <button id="left" title="Rotate counter-clockwise (Ctrl+Shift+R)" aria-label="Rotate counter-clockwise">↺</button>
+        <button id="right" title="Rotate clockwise (Ctrl+R)" aria-label="Rotate clockwise">↻</button>
+        <button id="star" title="Star (Ctrl+8)" aria-label="Star">☆</button>
+        <button id="delete" title="Move to the Recycle Bin (Delete)" aria-label="Delete">🗑</button>
+        <button id="infobtn" title="Photo details (I)" aria-label="Details">ⓘ</button>
+      </div>
+    </footer>
+    <aside id="info" hidden></aside>
+    <div id="ask" hidden>
+      <div class="box">
+        <p id="askText"></p>
+        <div class="row"><button id="askYes" class="primary">Delete</button><button id="askNo">Cancel</button></div>
+      </div>
+    </div>
+    <script type="module" src="/src/viewer.ts"></script>
+  </body>
+</html>
